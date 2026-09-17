@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import html
 import inspect
 from typing import Any
 
@@ -84,6 +85,7 @@ p, li, .stMarkdown {line-height: 1.55;}
 
 /* 侧栏 */
 section[data-testid="stSidebar"] {background: #F3F5F7; border-right: 1px solid #E5E7EB;}
+img[data-testid="stLogo"] {height: 2.75rem !important; width: auto !important; max-width: 100% !important;}
 section[data-testid="stSidebar"] .stMarkdown h3 {font-size: 0.95rem;}
 .ps-brand {font-weight: 700; font-size: 1.15rem; color: #1F4E79; letter-spacing: 0.04em; margin: 0.2rem 0 0 0;}
 .ps-brand-sub {color: #6B7280; font-size: 0.78rem; margin-bottom: 0.9rem;}
@@ -115,6 +117,19 @@ button[data-baseweb="tab"] {font-weight: 500; padding: 0.4rem 0.9rem;}
 
 /* 数据表工具条淡化 */
 [data-testid="stElementToolbar"] {opacity: 0.6;}
+
+/* 侧栏「后台运行」面板 */
+.ps-activity {font-size: 0.76rem; color: #4B5563; line-height: 1.5; border-top: 1px solid #E5E7EB; padding-top: 0.6rem; margin-top: 0.8rem;}
+.ps-activity-head {display: flex; justify-content: space-between; font-weight: 600; color: #1F2933; margin-bottom: 0.25rem;}
+.ps-activity-up {font-weight: 400; color: #9CA3AF;}
+.ps-activity-row {margin: 0.1rem 0;}
+.ps-dot {display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #9CA3AF; vertical-align: 1px;}
+.ps-dot.run {background: #1F4E79; animation: ps-pulse 1.4s ease-in-out infinite;}
+.ps-dot.err {background: #B91C1C;}
+@keyframes ps-pulse {0%, 100% {opacity: 1;} 50% {opacity: 0.3;}}
+.ps-activity-log {margin-top: 0.4rem; padding-top: 0.35rem; border-top: 1px dashed #E5E7EB; color: #6B7280; font-family: ui-monospace, Consolas, monospace; font-size: 0.7rem; line-height: 1.45;}
+.ps-activity-log .t {color: #9CA3AF; margin-right: 6px;}
+.ps-activity-log .bad {color: #B91C1C;}
 </style>
 """
 
@@ -123,10 +138,65 @@ def inject_style() -> None:
     st.markdown(_STYLE, unsafe_allow_html=True)
 
 
-def sidebar_status(status_lines: list[str] | None = None) -> None:
-    """侧栏底部的状态小字（模型、价格基准）。"""
-    if status_lines:
-        st.sidebar.markdown('<div class="ps-status">' + "<br>".join(status_lines) + "</div>", unsafe_allow_html=True)
+def _activity_html(ov: dict) -> str:
+    from . import activity
+
+    esc = html.escape
+    rows: list[str] = []
+    cur = ov.get("current")
+    if cur:
+        rows.append(f'<div class="ps-activity-row"><span class="ps-dot run"></span>{esc(cur["label"])} · 已运行 {activity.fmt_seconds(cur["elapsed"])}</div>')
+    elif ov.get("busy"):
+        rows.append('<div class="ps-activity-row"><span class="ps-dot run"></span>处理中</div>')
+    else:
+        rows.append('<div class="ps-activity-row"><span class="ps-dot"></span>空闲</div>')
+    for ln in ov.get("lines", []):
+        parts = [f'{ln["name"]} {ln["total"]} 次']
+        if ln["inflight"]:
+            parts.append(f'进行中 {ln["inflight"]}')
+        if ln["errors"]:
+            parts.append(f'失败 {ln["errors"]}')
+        if ln["last_seconds"] is not None:
+            parts.append(f'最近 {activity.fmt_seconds(ln["last_seconds"])}')
+        rows.append('<div class="ps-activity-row">' + " · ".join(parts) + "</div>")
+    pr = ov.get("price") or {}
+    auto = f'每 {pr["auto_days"]} 天' if pr.get("auto_days") else "手动"
+    rows.append(f'<div class="ps-activity-row">参考价刷新 {auto}' + (f' · 上次 {esc(pr["last"][5:])}' if pr.get("last") else "") + "</div>")
+    log: list[str] = []
+    for ev in ov.get("events", []):
+        cat = ev["category"]
+        if cat == "llm":
+            text = f'模型调用 {activity.fmt_seconds(ev["seconds"])}'
+        elif cat == "search":
+            text = f'检索 {ev["label"]} {activity.fmt_seconds(ev["seconds"])}'
+        elif cat in ("embed", "rerank"):
+            text = f'{activity.CATEGORY_NAMES[cat]} {activity.fmt_seconds(ev["seconds"])}'
+        else:
+            text = ev["label"]
+        if not ev["ok"]:
+            text += " 失败"
+        log.append(f'<div class="{"bad" if not ev["ok"] else ""}"><span class="t">{activity.fmt_clock(ev["at"])}</span>{esc(text)}</div>')
+    head = ('<div class="ps-activity-head"><span>后台运行</span>'
+            f'<span class="ps-activity-up">服务已运行 {activity.fmt_seconds(ov.get("uptime", 0))}</span></div>')
+    body = "".join(rows) + ('<div class="ps-activity-log">' + "".join(log) + "</div>" if log else "")
+    return f'<div class="ps-activity">{head}{body}</div>'
+
+
+def sidebar_activity() -> None:
+    """侧栏底部「后台运行」面板：整个服务进程的任务、模型调用、检索与最近事件。
+
+    有任务或调用进行中时每 3 s 刷新一次，否则每 10 s；只重跑这一小块，不重跑页面。
+    """
+    from . import activity, jobs
+
+    busy = activity.busy() or jobs.is_running()
+
+    @st.fragment(run_every=3 if busy else 10)
+    def _panel() -> None:
+        st.markdown(_activity_html(activity.overview()), unsafe_allow_html=True)
+
+    with st.sidebar:
+        _panel()
 
 
 def page_header(title: str, subtitle: str | None = None) -> None:

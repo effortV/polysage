@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from .. import activity
 from ..config import settings
 from .base import SearchHit
 
@@ -58,6 +59,11 @@ def _ddg(query: str, limit: int, region: str) -> list[SearchHit]:
 
 
 def search(query: str, limit: int = 10, region: str = "cn-zh") -> list[SearchHit]:
+    with activity.track("search", "web"):
+        return _search(query, limit, region)
+
+
+def _search(query: str, limit: int, region: str) -> list[SearchHit]:
     if settings.tavily_api_key:
         try:
             return _tavily(query, limit)

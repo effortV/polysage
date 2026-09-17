@@ -5,9 +5,11 @@ import re
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
+from .. import activity
 from ..config import settings
 
 # 可信度等级（数字越小越可信）：与内部技术路线 3.7 一致
@@ -59,6 +61,15 @@ def get_json(url: str, params: dict | None = None, headers: dict | None = None, 
     hdrs = {"User-Agent": settings.user_agent, "Accept": "application/json"}
     if headers:
         hdrs.update(headers)
+    with activity.track("search", _host(url)):
+        return _get_json(url, params, hdrs, timeout, retries)
+
+
+def _host(url: str) -> str:
+    return urlparse(url).netloc
+
+
+def _get_json(url: str, params: dict | None, hdrs: dict, timeout: float | None, retries: int) -> dict[str, Any] | list | None:
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -88,7 +99,7 @@ def get_text(url: str, params: dict | None = None, headers: dict | None = None, 
                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
     if headers:
         hdrs.update(headers)
-    with httpx.Client(timeout=timeout or settings.http_timeout, follow_redirects=True) as c:
+    with activity.track("search", _host(url)), httpx.Client(timeout=timeout or settings.http_timeout, follow_redirects=True) as c:
         r = c.get(url, params=params, headers=hdrs)
         r.raise_for_status()
         return r.headers.get("content-type", ""), r.text
@@ -99,7 +110,7 @@ def get_bytes(url: str, headers: dict | None = None, timeout: float | None = Non
                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
     if headers:
         hdrs.update(headers)
-    with httpx.Client(timeout=timeout or 90.0, follow_redirects=True) as c:
+    with activity.track("search", _host(url)), httpx.Client(timeout=timeout or 90.0, follow_redirects=True) as c:
         r = c.get(url, headers=hdrs)
         r.raise_for_status()
         return r.headers.get("content-type", ""), r.content

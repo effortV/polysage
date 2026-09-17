@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
-from .. import db, kb, llm
+from .. import activity, db, kb, llm
 from . import tools as T
 from .roles import ROLES, system_prompt
 
@@ -116,6 +116,7 @@ def chat(session_id: int, user_text: str, *, max_steps: int = 8,
             for tc in res.tool_calls:
                 if on_event:
                     on_event("tool_call", tc)
+                activity.note(f"对话调用工具 {tc['name']}", category="tool")
                 calls[tc["name"]] = calls.get(tc["name"], 0) + 1
                 cap = TOOL_CALL_CAPS.get(tc["name"])
                 if cap and calls[tc["name"]] > cap:

@@ -16,6 +16,7 @@ import httpx
 import numpy as np
 
 from .config import settings
+from . import activity
 
 
 class LLMNotConfigured(RuntimeError):
@@ -61,6 +62,11 @@ def _thinking_payload(thinking: bool | int | None) -> dict[str, Any]:
 
 
 def _post(path: str, payload: dict[str, Any], timeout: float = 300.0, retries: int = 3, kind: str = "chat") -> dict[str, Any]:
+    with activity.track("llm" if kind == "chat" else kind, payload.get("model", "")):
+        return _post_raw(path, payload, timeout, retries, kind)
+
+
+def _post_raw(path: str, payload: dict[str, Any], timeout: float, retries: int, kind: str) -> dict[str, Any]:
     url = _base_url(kind) + path
     last: Exception | None = None
     for attempt in range(retries):
@@ -132,7 +138,7 @@ def chat_stream(messages: list[dict[str, Any]], *, temperature: float = 0.3, max
     url = _base_url("chat") + "/chat/completions"
     payload = {"model": model or settings.chat_model, "messages": messages, "temperature": temperature,
                "max_tokens": max_tokens, "stream": True, **_thinking_payload(thinking)}
-    with httpx.Client(timeout=180.0) as client:
+    with activity.track("llm", payload["model"]), httpx.Client(timeout=180.0) as client:
         with client.stream("POST", url, headers=_headers("chat"), json=payload) as r:
             if r.status_code >= 400:
                 raise LLMError(f"SiliconFlow {r.status_code}: {r.read()[:500]!r}")
