@@ -3,6 +3,15 @@
 一个能自己跑完 **查资料 → 搞懂现配方 → 找替代料 → 出降本配方 → 给实验意见 → 数据回灌建模 → 扫描全部可行配方 → 推荐下一轮** 的智能体流水线。
 LLM 用硅基流动（SiliconFlow）上的 `deepseek-ai/DeepSeek-V4-Pro`，每个结论都带出处（DOI / URL / 文件），价格分“网查参考价 / 甲方实价”两档。
 
+仓库：https://github.com/effortV/polysage
+
+## 0 部署到 Streamlit Community Cloud
+
+1. 用 GitHub 账号登录 https://share.streamlit.io ，授权 Streamlit 读取仓库。
+2. New app → Repository `effortV/polysage`，Branch `master`，Main file `streamlit_app.py`；Advanced settings 里 Python 选 3.12 或 3.13。
+3. Advanced settings → Secrets：粘贴本地 `.streamlit/secrets.toml` 的内容（由 `.env` 生成，键名一致；该文件不入库）。
+4. Deploy。首次构建约 3～5 分钟。云端的 SQLite 与 `data/` 目录随重新部署重置，正式使用请接持久存储。
+
 ## 1 安装与启动
 
 ```powershell
