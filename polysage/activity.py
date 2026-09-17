@@ -117,4 +117,16 @@ def overview() -> dict[str, Any]:
     last = pricing.last_refresh()
     price = {"auto_days": auto_days, "last": last[:16].replace("T", " ") if last else None}
     return {"current": current, "busy": bool(job) or busy(), "lines": lines, "price": price,
-            "events": snap["events"][:8], "uptime": snap["uptime"]}
+            "events": snap["events"][:8], "uptime": snap["uptime"], "tunnel_url": tunnel_url()}
+
+
+def tunnel_url() -> str | None:
+    """tunnel.ps1 写下的当前外网地址（临时隧道每次重启会变）；没开隧道则 None。"""
+    from .config import DATA_DIR
+
+    p = DATA_DIR / "tunnel_url.txt"
+    try:
+        u = p.read_text(encoding="utf-8").strip() if p.exists() else ""
+    except OSError:
+        return None
+    return u if u.startswith("https://") else None

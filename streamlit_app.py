@@ -9,9 +9,11 @@ ASSETS = Path(__file__).parent / "assets"
 st.set_page_config(page_title="HDU×恒诺 - 包装膜（AI4S）", page_icon=str(ASSETS / "hdu.png"), layout="wide")
 
 from polysage import pricing, ui  # noqa: E402
+from polysage.config import settings  # noqa: E402
 
 pricing.start_scheduler()  # 参考价自动刷新（默认关闭，.env 设 PRICE_AUTO_REFRESH_DAYS 开启）
 ui.inject_style()
+ui.password_gate(settings.app_password)  # .env 设了 APP_PASSWORD 才启用
 try:
     # 以 UTF-8 读入后传字符串：st.logo 直接读文件时用系统默认编码，中文 Windows（GBK）会解码失败
     st.logo((ASSETS / "logo.svg").read_text(encoding="utf-8"), size="large")

@@ -163,6 +163,9 @@ def _activity_html(ov: dict) -> str:
     pr = ov.get("price") or {}
     auto = f'每 {pr["auto_days"]} 天' if pr.get("auto_days") else "手动"
     rows.append(f'<div class="ps-activity-row">参考价刷新 {auto}' + (f' · 上次 {esc(pr["last"][5:])}' if pr.get("last") else "") + "</div>")
+    if ov.get("tunnel_url"):
+        u = esc(ov["tunnel_url"])
+        rows.append(f'<div class="ps-activity-row">外网地址 <a href="{u}" target="_blank">{u.replace("https://", "")}</a></div>')
     log: list[str] = []
     for ev in ov.get("events", []):
         cat = ev["category"]
@@ -198,6 +201,24 @@ def sidebar_activity() -> None:
 
     with st.sidebar:
         _panel()
+
+
+def password_gate(password: str | None) -> None:
+    """访问口令：没设口令直接放行；设了就在本会话首次打开时要求输入，之后不再问。"""
+    import hmac
+
+    if not password or st.session_state.get("_authed"):
+        return
+    st.markdown("<h1>HDU×恒诺 - 包装膜（AI4S）</h1>", unsafe_allow_html=True)
+    with st.form("login"):
+        pw = st.text_input("访问口令", type="password")
+        ok = st.form_submit_button("进入", type="primary")
+    if ok:
+        if hmac.compare_digest(pw.encode("utf-8"), password.encode("utf-8")):
+            st.session_state["_authed"] = True
+            st.rerun()
+        st.error("口令不对。")
+    st.stop()
 
 
 def page_header(title: str, subtitle: str | None = None) -> None:

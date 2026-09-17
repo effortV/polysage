@@ -18,7 +18,7 @@ powershell -ExecutionPolicy Bypass -File .\install_service.ps1     # 注册计�
 ```
 
 - `serve.ps1`：服务器模式（绑定 0.0.0.0:8511、关闭热重载、崩溃 5 s 自动拉起），日志在 `data/server.log`。
-- `install_service.ps1`：注册两个计划任务——`PolySage-Server`（登录后自动常驻）、`PolySage-Backup`（每天 02:30 备份）；
+- `install_service.ps1`：注册三个计划任务——`PolySage-Server`（登录后自动常驻）、`PolySage-Tunnel`（外网隧道）、`PolySage-Backup`（每天 02:30 备份）；
   `-Remove` 卸载。以当前用户运行，不需要管理员。
 - `backup.ps1`：把数据库（一致快照）、`data/`、`knowledge/`、`.env`、`.streamlit/secrets.toml` 打成 `backups/polysage-日期.zip`，保留 14 份。
 - 让局域网能访问，需要在**管理员** PowerShell 放行端口，并关掉睡眠：
@@ -29,6 +29,12 @@ powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 ```
 
+- **外网访问（隧道）**：`tunnel.ps1` 用 Cloudflare Tunnel 把本机 8511 暴露到公网，计划任务 `PolySage-Tunnel` 登录后自动跑。
+  - 必须先在 `.env` 里设 `APP_PASSWORD=你的口令`（打开网页要先输口令），没设它会拒绝开隧道。
+  - 不配 token 时是临时隧道：随机网址 `https://xxx.trycloudflare.com`，每次重启会变，当前网址写在 `data/tunnel_url.txt`，侧栏「后台运行」也显示。
+  - 要固定网址：Cloudflare 账号 + 一个托管在 Cloudflare 的域名 → Zero Trust → Networks → Tunnels → 新建，公共主机名指向 `http://localhost:8511`，
+    把 token 填到 `.env` 的 `CLOUDFLARE_TUNNEL_TOKEN`，重启 `PolySage-Tunnel`。
+  - cloudflared 安装：`winget install Cloudflare.cloudflared`。国内访问 Cloudflare 慢的话可换 cpolar / 花生壳，把 `tunnel.ps1` 里的命令换掉即可。
 - 停止 / 重启：任务计划程序里结束 `PolySage-Server`，或 `Stop-ScheduledTask -TaskName PolySage-Server` 后 `Start-ScheduledTask -TaskName PolySage-Server`。
 - 改了代码后需要重启服务才生效（服务器模式不热重载）。
 

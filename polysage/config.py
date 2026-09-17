@@ -67,6 +67,8 @@ class Settings:
     unpaywall_email: str = field(default_factory=lambda: _env("UNPAYWALL_EMAIL"))
     semantic_scholar_api_key: str = field(default_factory=lambda: _env("SEMANTIC_SCHOLAR_API_KEY"))
     tavily_api_key: str = field(default_factory=lambda: _env("TAVILY_API_KEY"))
+    # 访问口令：设置后打开界面要先输入；对外网开放（隧道）前必须设置
+    app_password: str = field(default_factory=lambda: _env("APP_PASSWORD"))
 
     sf_api_key: str = field(default_factory=lambda: _env("SILICONFLOW_API_KEY"))
     sf_base_url: str = field(default_factory=lambda: _env("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"))
