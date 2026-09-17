@@ -85,7 +85,8 @@ p, li, .stMarkdown {line-height: 1.55;}
 
 /* 侧栏 */
 section[data-testid="stSidebar"] {background: #F3F5F7; border-right: 1px solid #E5E7EB;}
-img[data-testid="stLogo"] {height: 4rem !important; width: auto !important; max-width: 100% !important;}
+/* logo 放大：1.45 的 img 是 data-testid=stLogo，1.6x 改成 stSidebarLogo，类名 .stLogo 两版都有 */
+img.stLogo, img[data-testid="stLogo"], img[data-testid="stSidebarLogo"] {height: 4rem !important; width: auto !important; max-width: 100% !important;}
 section[data-testid="stSidebar"] .stMarkdown h3 {font-size: 0.95rem;}
 .ps-brand {font-weight: 700; font-size: 1.15rem; color: #1F4E79; letter-spacing: 0.04em; margin: 0.2rem 0 0 0;}
 .ps-brand-sub {color: #6B7280; font-size: 0.78rem; margin-bottom: 0.9rem;}
