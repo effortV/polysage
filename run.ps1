@@ -9,4 +9,4 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "缺少依赖，正在安装 requirements.txt ..."
     & $py -m pip install -r requirements.txt
 }
-& $py -m streamlit run streamlit_app.py
+& $py -m streamlit run streamlit_app.py --server.port 8511 --server.headless true --server.fileWatcherType auto
