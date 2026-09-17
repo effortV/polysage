@@ -15,3 +15,6 @@ knowledge/07_模型/*.pkl
 knowledge/07_模型/*.joblib
 knowledge/06_实验数据/方案试验包/
 *.docx.bak
+
+# 本机备份包（backup.ps1 生成）
+backups/

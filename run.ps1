@@ -1,4 +1,4 @@
-# 启动膜方 AI 界面（Streamlit）。优先用项目 .venv；没有则用当前 PATH 里的 python（如 Anaconda）。
+﻿# 启动膜方 AI 界面（Streamlit）。优先用项目 .venv；没有则用当前 PATH 里的 python（如 Anaconda）。
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 Set-Location $PSScriptRoot

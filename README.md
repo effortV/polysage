@@ -1,16 +1,46 @@
-# 膜方 AI（PolySage）—— 包装膜配方 AI 降本平台
+# HDU×恒诺 - 包装膜（AI4S）—— 包装膜配方 AI 降本平台（PolySage）
 
 一个能自己跑完 **查资料 → 搞懂现配方 → 找替代料 → 出降本配方 → 给实验意见 → 数据回灌建模 → 扫描全部可行配方 → 推荐下一轮** 的智能体流水线。
 LLM 用硅基流动（SiliconFlow）上的 `deepseek-ai/DeepSeek-V4-Pro`，每个结论都带出处（DOI / URL / 文件），价格分“网查参考价 / 甲方实价”两档。
 
 仓库：https://github.com/effortV/polysage
 
-## 0 部署到 Streamlit Community Cloud
+## 0 部署
+
+### 0.1 本机作为临时服务器（当前方式）
+
+Streamlit Community Cloud 的磁盘不持久（重新部署 / 休眠唤醒后 `data/`、`knowledge/` 里新写的内容会丢），
+所以正式数据放在本机：本机常驻运行，同一局域网的人用 `http://<本机IP>:8511` 访问。
+
+```powershell
+cd "D:\桌面\membrane for Packaging\claude"
+powershell -ExecutionPolicy Bypass -File .\install_service.ps1     # 注册计划任务并立即启动
+```
+
+- `serve.ps1`：服务器模式（绑定 0.0.0.0:8511、关闭热重载、崩溃 5 s 自动拉起），日志在 `data/server.log`。
+- `install_service.ps1`：注册两个计划任务——`PolySage-Server`（登录后自动常驻）、`PolySage-Backup`（每天 02:30 备份）；
+  `-Remove` 卸载。以当前用户运行，不需要管理员。
+- `backup.ps1`：把数据库（一致快照）、`data/`、`knowledge/`、`.env`、`.streamlit/secrets.toml` 打成 `backups/polysage-日期.zip`，保留 14 份。
+- 让局域网能访问，需要在**管理员** PowerShell 放行端口，并关掉睡眠：
+
+```powershell
+netsh advfirewall firewall add rule name="PolySage 8511" dir=in action=allow protocol=TCP localport=8511
+powercfg /change standby-timeout-ac 0
+powercfg /change hibernate-timeout-ac 0
+```
+
+- 停止 / 重启：任务计划程序里结束 `PolySage-Server`，或 `Stop-ScheduledTask -TaskName PolySage-Server` 后 `Start-ScheduledTask -TaskName PolySage-Server`。
+- 改了代码后需要重启服务才生效（服务器模式不热重载）。
+
+**迁移到正式服务器**：在新机器上克隆仓库、建 `.venv` 装依赖，把最新一份 `backups/polysage-*.zip` 解压到项目根目录
+（覆盖 `data/`、`knowledge/`、`.env`、`.streamlit/`），再按上面方式启动即可；数据库是单文件 SQLite，没有别的状态。
+
+### 0.2 Streamlit Community Cloud（仅演示）
 
 1. 用 GitHub 账号登录 https://share.streamlit.io ，授权 Streamlit 读取仓库。
 2. New app → Repository `effortV/polysage`，Branch `master`，Main file `streamlit_app.py`；Advanced settings 里 Python 选 3.12 或 3.13。
 3. Advanced settings → Secrets：粘贴本地 `.streamlit/secrets.toml` 的内容（由 `.env` 生成，键名一致；该文件不入库）。
-4. Deploy。首次构建约 3～5 分钟。云端的 SQLite 与 `data/` 目录随重新部署重置，正式使用请接持久存储。
+4. Deploy。首次构建约 3～5 分钟。云端磁盘不持久：`data/`、`knowledge/` 随重新部署重置，只适合演示。
 
 ## 1 安装与启动
 

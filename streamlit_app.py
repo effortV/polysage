@@ -1,4 +1,4 @@
-"""膜方（PolySage）界面入口。启动：.\\run.ps1 或 streamlit run streamlit_app.py"""
+"""HDU×恒诺 - 包装膜（AI4S）界面入口（包名 polysage）。启动：.\\run.ps1 或 streamlit run streamlit_app.py"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import streamlit as st
 
 ASSETS = Path(__file__).parent / "assets"
-st.set_page_config(page_title="膜方 · 包装膜配方降本", page_icon=str(ASSETS / "hdu.png"), layout="wide")
+st.set_page_config(page_title="HDU×恒诺 - 包装膜（AI4S）", page_icon=str(ASSETS / "hdu.png"), layout="wide")
 
 from polysage import pricing, ui  # noqa: E402
 
