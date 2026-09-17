@@ -32,7 +32,7 @@ Register-ScheduledTask -TaskName "PolySage-Server" -Action $serveAction -Princip
 
 # 外网隧道（cloudflared）：与服务同样的常驻设置
 $tunnelAction = New-ScheduledTaskAction -Execute $ps -WorkingDirectory $root `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$root	unnel.ps1`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$root\tunnel.ps1`""
 Register-ScheduledTask -TaskName "PolySage-Tunnel" -Action $tunnelAction -Principal $principal -Settings $serveSettings `
     -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $user) `
     -Description "Cloudflare 隧道：把本机 8511 暴露到外网（需 .env 设 APP_PASSWORD）" -Force | Out-Null
@@ -50,5 +50,5 @@ Start-ScheduledTask -TaskName "PolySage-Server"
 Start-ScheduledTask -TaskName "PolySage-Tunnel"
 $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" -and $_.InterfaceAlias -notlike "*WSL*" -and $_.InterfaceAlias -notlike "*vEthernet*" } | Select-Object -First 1).IPAddress
 Write-Host "已注册并启动 PolySage-Server 与 PolySage-Tunnel（登录时自动启动）；PolySage-Backup 每天 02:30。"
-Write-Host "外网地址：隧道连上后写在 data	unnel_url.txt，界面侧栏「后台运行」也会显示；日志 data	unnel.log。"
+Write-Host "外网地址：隧道连上后写在 data\tunnel_url.txt，界面侧栏「后台运行」也会显示；日志 data\tunnel.log。"
 Write-Host "本机访问 http://localhost:8511 ，局域网访问 http://${ip}:8511（需放行防火墙 8511 端口）。"
