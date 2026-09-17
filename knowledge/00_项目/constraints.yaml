@@ -1,0 +1,164 @@
+base_formulation:
+  LL: 60.0
+  LD: 10.0
+  HD: 5.0
+  R1: 25.0
+base_note: 40% 内部比例（LD/HD/R1）为假设值，需在 Step 0 前与甲方确认
+cost_limit: auto
+cost_target: auto
+groups:
+  virgin_pe:
+  - LL
+  - LL6
+  - mLL
+  - mLL8
+  - LLC
+  ldpe_class:
+  - LD
+  - R1
+  - R2
+  hdpe:
+  - HD
+  - RHD
+  recycled:
+  - R1
+  - R2
+  - RL
+  - PCR
+  - RHD
+  - SC
+  secondary_recycled:
+  - R2
+  poe:
+  - POE
+  - POP
+  - VL
+  - OBC
+  eva:
+  - EVA
+  - EMA
+  filler:
+  - FL
+  - TFL
+  - TALC
+  additive:
+  - AD
+rules:
+- name: 新料 PE 合计（C4+C6+茂金属）
+  group: virgin_pe
+  min: 20
+  max: 60
+  reason: 低于 20% 韧性无法保证
+- name: LDPE 类合计（LDPE 新料+再生高压料）
+  group: ldpe_class
+  min: 35
+  reason: 茂金属比例高时膜泡稳定性依赖 LDPE 类
+- name: HDPE
+  group: hdpe
+  max: 5
+  reason: 透明与撕裂红线
+- name: 再生料合计（单层）
+  group: recycled
+  max: 65
+  applies: mono
+  reason: 单层透明产品雾度上限
+- name: 再生料合计（芯层）
+  group: recycled
+  max: 80
+  applies: core
+  reason: 三层芯层
+- name: 二级再生料（单层）
+  group: secondary_recycled
+  max: 12
+  applies: mono
+  reason: 晶点
+- name: POE 类
+  group: poe
+  max: 4
+  reason: 挺度与成本
+- name: EVA 类
+  group: eva
+  max: 8
+  reason: 粘连与气味（VA ≤ 9%）
+- name: 填充母料
+  group: filler
+  max: 0
+  reason: 透明红线
+- name: 功能助剂母料
+  group: additive
+  min: 0.5
+  max: 1.5
+  reason: PPA 有效成分 300～800 ppm
+component_bounds:
+  LL:
+  - 0
+  - 60
+  LL6:
+  - 0
+  - 30
+  mLL:
+  - 0
+  - 20
+  mLL8:
+  - 0
+  - 15
+  LD:
+  - 0
+  - 20
+  HD:
+  - 0
+  - 10
+  MD:
+  - 0
+  - 15
+  R1:
+  - 0
+  - 60
+  R2:
+  - 0
+  - 40
+  RL:
+  - 0
+  - 20
+  PCR:
+  - 0
+  - 20
+  SC:
+  - 0
+  - 15
+  POE:
+  - 0
+  - 4
+  POP:
+  - 0
+  - 5
+  VL:
+  - 0
+  - 10
+  EVA:
+  - 0
+  - 8
+  EMA:
+  - 0
+  - 8
+  FL:
+  - 0
+  - 20
+  TFL:
+  - 0
+  - 10
+  AD:
+  - 0.5
+  - 1.5
+  CP:
+  - 0
+  - 2
+  LLC:
+  - 0
+  - 60
+pass_rule:
+  mechanical_ratio: 0.95
+  mechanical_sd: 1
+  haze_delta_max: 1.0
+  transmittance_delta_min: -1.0
+  note: 拉伸/撕裂/穿刺/热封 ≥ base×0.95 且 ≥ base−1SD；雾度 ≤ base+1.0；透光率 ≥ base−1%

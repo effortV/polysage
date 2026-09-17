@@ -1,0 +1,41 @@
+product:
+  name: 透明 PE 包装膜
+  transparent: true
+  structure: mono
+  thickness_um: null
+  process: 吹膜
+current_formulation:
+  LL:
+    pct: 60.0
+    grade: C4 LLDPE（7042 类，待确认）
+  LD:
+    pct: 10.0
+    grade: LDPE（2426H 类，待确认）
+  HD:
+    pct: 5.0
+    grade: HDPE 膜料（5000S 类，待确认）
+  R1:
+    pct: 25.0
+    grade: 再生高压一级透明料
+formulation_note: 甲方口述：LLDPE 60%，LDPE+HDPE+再生一级料合计 40%；内部比例 10/5/25 为假设，待确认
+red_lines:
+- 拉伸强度
+- 撕裂强度
+- 穿刺强度
+- 热封强度
+- 透明度（雾度不增、透光率不降）
+cost:
+  current: 8000
+  limit: 8000
+  target: 7600
+  unit: 元/吨
+  note: 甲方口述约 8000；正式以回填实价为准
+targets:
+  replace_lldpe_pct: 30
+  note: 甲方希望替代约 30% LLDPE；接受其他 PE 牌号、调比例、少量其他材料
+search:
+  year_from: 2000
+  max_hits_per_query: 15
+  languages:
+  - zh
+  - en

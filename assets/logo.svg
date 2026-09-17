@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="56" viewBox="0 0 260 56">
+  <rect x="2" y="8" width="40" height="40" rx="9" fill="#1F4E79"/>
+  <path d="M12 36 L22 18 L32 36 Z" fill="#FFFFFF" opacity="0.95"/>
+  <rect x="17" y="30" width="10" height="6" fill="#1F4E79"/>
+  <text x="54" y="34" font-family="'PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif" font-size="22" font-weight="700" fill="#1F4E79" letter-spacing="2">膜方</text>
+  <text x="112" y="34" font-family="'PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif" font-size="12" fill="#6B7280">包装膜配方降本工作台</text>
+</svg>

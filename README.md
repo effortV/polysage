@@ -1,0 +1,139 @@
+# 膜方 AI（PolySage）—— 包装膜配方 AI 降本平台
+
+一个能自己跑完 **查资料 → 搞懂现配方 → 找替代料 → 出降本配方 → 给实验意见 → 数据回灌建模 → 扫描全部可行配方 → 推荐下一轮** 的智能体流水线。
+LLM 用硅基流动（SiliconFlow）上的 `deepseek-ai/DeepSeek-V4-Pro`，每个结论都带出处（DOI / URL / 文件），价格分“网查参考价 / 甲方实价”两档。
+
+## 1 安装与启动
+
+```powershell
+cd "D:\桌面\membrane for Packaging\claude"
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env      # 已有 .env 则跳过；填 SILICONFLOW_API_KEY
+.\run.ps1                        # 浏览器打开 http://localhost:8511
+```
+
+也可以直接用 Anaconda 自带的 Python 跑（已验证 Streamlit 1.45 与 1.63 都能用）：
+
+```powershell
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+命令行方式（不开界面）：
+
+```powershell
+$env:PYTHONUTF8="1"
+.\.venv\Scripts\python.exe -m polysage.pipeline run            # 发现阶段 ①～⑥
+.\.venv\Scripts\python.exe -m polysage.pipeline status
+.\.venv\Scripts\python.exe -m polysage.pipeline learn           # ⑦ 回灌建模（数据放 knowledge/06_实验数据/data.csv）
+.\.venv\Scripts\python.exe -m polysage.pipeline scan            # ⑧ 扫描推荐
+.\.venv\Scripts\python.exe -m polysage.pipeline review --round 1
+```
+
+测试（离线，假 LLM + 假检索源）：`.\.venv\Scripts\python.exe -m pytest -q`
+
+## 2 推荐智能体（V3 主入口）
+
+### 对话出方案（推荐用法）
+
+“智能体”页第一个标签，或“对话”页新建“★ 膜方智能体”会话。直接用自然语言：
+
+- 报材料与价格：`供应商 A 报了国产 7042，密度 0.918，熔点 122，MFR 2.0，到厂价 8300，2026-09-16 报价` → 自动 `register_material`（同类料复用已有代码，如 7042→LLC）→ 价格进价格卡并联动重算。
+- 要方案：`请出降本方案` → `recommend_schemes` → 表格：排名 / 配方 / 成本(口径) / 降本 / 五项方向 / 过关把握 / 风险 + 首轮建议。
+- 改价格：`7042 涨到 9200 了，重新出一下` → `add_price` 联动 → 重新出方案并对比涨价前后。
+- 追问：`第 1 名的透明度为什么是 ≈？依据？` → `explain_scheme` + 知识库检索；`价格变了哪些方案受影响？` → `price_report`。
+- 筛替代品：`有什么料可以替代现用 LLDPE？` → `screen_materials`（密度 / 熔点 / MFR 窗口 + 价格）。
+
+DeepSeek 的函数调用参数用 `additionalProperties` 明确类型（否则 SiliconFlow 会返回空对象）；同一轮里同一工具有调用上限，到上限强制作答。
+
+### base（现用膜实测）与两条数据通道
+
+- base 只有 4 个数：拉伸强度、撕裂强度、穿刺力、热封强度（不分 MD/TD；透明度按目视判，不进 base）。“实验与模型 → base 现用膜”表单录入，或对话里直接报数（`set_base`）。
+  存 `00_项目/base.yaml`，自动派生过关线（≥ base×0.95 且 ≥ base−1SD；无 SD 时只用 0.95）。有 base 后智能体、模型判定、报告都按它判过关。
+  数据表主指标列：`tensile / tear / puncture / seal`（若只填了 MD/TD 明细列会自动取平均折算）。
+- 约束页（原料与配方 → 约束）是可视化编辑：现配方比例、分组规则区间图（横条 = 允许区间，圆点 = 现配方值）与可编辑表、单组分范围、成本上限（自动跟随价格或手动）。
+- 数据回灌两条通道（同一格式，多一列 `source`）：**推荐方案试验**（选方案编号上传，自动关联，用于预测 vs 实测复盘）与 **自主实验**；
+  “方案试验包”按方案生成称料单 + 预填配方的数据表模板。样品 ≥ 15 组可一键建模。
+
+### 对话模型切换
+
+“设置”页可在 SiliconFlow（DeepSeek-V4-Pro）与 ZJU（`https://api.zjumembrane.cn/v1`，`zju-qwen`）之间切换（`.env` 的 `LLM_PROFILE`）；向量/重排固定用 SiliconFlow bge-m3。
+
+### 表单 / 命令行出方案
+
+界面“智能体 → 表单出方案”页 / 命令行 `python -m polysage.recommend`：
+
+- 输入：目标膜（任务书）+ 可用材料清单（物性 + 价格，可勾选/新增/改价或上传 JSON）+ 约束。
+- 过程：替代品窗口筛选（以现用 LLDPE 的密度 / 熔点 / MFR 为基准）→ 约束内生成候选（含配方库）→ 按价格卡算成本 →
+  LLM 用材料卡/文献卡做五项定性评估 →（有实验模型时）预测 P(过关) → 按“降本额 × 过关把握”排序 → 首轮试验建议。
+- 输出：`05_配方库/智能体方案_<时间>.xlsx`（方案 / 替代品筛选 / 价格口径 / 首轮试验建议）+ JSON + `04_价格卡/询价清单.xlsx`。
+- 价格联动：任何价格登记（界面、`recommend price`、回填、每周自动网查）→ 全部方案成本重算 → 重排 → `04_价格卡/价格变动报告.md`（成本变动 ≥ 100 元/吨或排名变动 ≥ 3 位会标记）。
+- 价格基准：现用 LLDPE 12,000、再生料 8,000（甲方口述）；国产 C4 LLDPE（LLC）8,400 等为假设参考价；成本上限 = 现配方按当前价格卡的成本（自动跟随）。
+
+```powershell
+.\.venv\Scripts\python.exe -m polysage.recommend example > input.json   # 示例输入
+.\.venv\Scripts\python.exe -m polysage.recommend run input.json         # 出方案
+.\.venv\Scripts\python.exe -m polysage.recommend screen --ref LL        # 替代品筛选
+.\.venv\Scripts\python.exe -m polysage.recommend price LLC 8200 --type actual --source "供应商A 2026-09-16"
+```
+
+## 3 流水线
+
+| 阶段 | 做什么 | LLM 负责 | 产出（knowledge/） |
+|---|---|---|---|
+| ① 采集 | 8 组主题 × 多源检索（OpenAlex / Crossref / Scopus / Google Patents / 网页），抓 OA 全文与专利全文，入库建索引 | 生成检索式、逐条判相关、抽成文献卡/专利卡 | 02_文献卡、03_专利卡、00_项目/来源清单.xlsx |
+| ② 机理 | 回答“为什么是 LLDPE 60 / LDPE+HDPE+再生 40”，缺依据自动补检索 | 带 [S#] 的机理分析与报告 | 00_项目/现配方机理报告.md |
+| ③ 寻料 | 按功能找替代料，定向检索 TDS 与文献，网查参考价（带 URL/日期） | 材料卡、价格抽取、新材料建议 | 01_材料卡、04_价格卡、00_项目/候选材料全清单.xlsx |
+| ④ 配方 | 约束内生成候选 + 首版 Top 20 → 成本/密度/面积指数 → 排序 | 五项性能定性评估、风险、过关把握 | 05_配方库/Top20候选配方_初步预计.xlsx、04_价格卡/询价清单.xlsx |
+| ⑤ 报告 | 汇总为内部版 / 甲方版 Word | 首轮试验配方挑选与建议 | 00_项目/发现阶段报告_*.docx |
+| ⑥ DOE | 首轮 24～30 个配方（优先配方 + D-最优补点）+ 数据表模板 | — | 06_实验数据/首轮试验方案.xlsx、数据表模板.csv |
+| ⑦ 学习 | 质检 → 每项性能一个模型（Scheffé / GBR / GP）→ LOOCV 验收 | — | 07_模型/*.joblib、模型验证报告.md |
+| ⑧ 扫描 | 候选空间（配方库 + 约束内随机 2000）逐个预测 → P(过关) → min 成本 → 利用型 + 探索型 | 化学合理性与货源复核 | 06_实验数据/推荐配方.xlsx / .md |
+| ⑨ 复盘 | 实测 vs 预测 → 复盘纪要；收敛判断（连续两轮改善 < 50 元/吨） | 复盘纪要 | 08_复盘/*.md |
+
+未配置 LLM 密钥时：①（检索入库）、④（生成与成本）、⑥⑦ 可运行；判断类步骤跳过或退化，并在日志中提示。
+
+## 4 硬规则
+
+- 数值只能来自 TDS / 文献 / 实价；LLM 只给方向与幅度等级（↑↑/↑/≈/↓/↓↓）。
+- 每条结论带 [S#]，出处在报告末尾；可信度：实验 > TDS > 期刊 > 专利 > 行业网站 > 论坛。
+- base、约束（`knowledge/00_项目/constraints.yaml`，对应内部技术路线表 4-2）、任务书（`task.yaml`）只从文件读取，不在对话里口头改。
+- 网查参考价与现有估计价偏差 > 40% 时不自动采用，记为待核对（价格卡里 `estimate_candidate`）。
+- 模型验收看 LOOCV 的 RMSE（≤ base 8%；雾度 ≤ 1.0），不看训练集 R²；不达标先补数据。
+
+## 5 检索源现状
+
+| 源 | 状态 | 说明 |
+|---|---|---|
+| OpenAlex / Crossref / Semantic Scholar | 可用 | 英文文献题录 + 摘要 + OA 链接 |
+| Elsevier Scopus | 可用（两枚 key 均通过测试） | 题录 + 摘要；全文需机构授权 |
+| Elsevier ScienceDirect 检索 / 全文 | 需机构 IP 或 insttoken | 当前 401，已从默认源移除 |
+| Google Patents | 可用 | 题录 + 权利要求 + 说明书全文 |
+| Unpaywall | 可用 | 合法 OA PDF；部分出版社对程序下载返回 403 → 手动上传 |
+| DuckDuckGo / Tavily | 可用 | 供应商 TDS、价格行情页 |
+| CNKI / 万方 / 智慧芽 / incoPat | 无开放接口 | 在“知识库 → 手动上传”上传 PDF 或导出 txt（自动拆题录） |
+
+## 6 目录
+
+```
+polysage/
+  llm.py            SiliconFlow 客户端（对话 / 函数调用 / 向量 / 重排）
+  db.py, kb.py      SQLite 持久层；知识库文件层（卡片 Markdown、task/constraints）
+  sources/          各检索源与抓取
+  ingest/           解析、切片、入库、卡片生成
+  rag/              BM25 + 向量混合检索、带引用回答
+  agents/           六个长期角色、工具集、函数调用循环、会话管理
+  formulation/      原料库（含再生料批次）、约束、成本、候选生成、替代品筛选、定性评估、导出
+  recommender.py    推荐智能体核心；recommend.py 命令行；pricing.py 价格联动与每周刷新
+  ml/               数据表、模型、DOE、推荐优化
+  pipeline/         ①～⑨ 编排与命令行
+app_pages/          Streamlit 页面（智能体 / 流水线 / 对话 / 知识库 / 原料与配方 / 实验与模型 / 设置）
+knowledge/          00_项目 … 08_复盘（人类可读镜像）
+data/               polysage.db、下载与上传文件、流水线状态与日志
+```
+
+## 7 实验数据表
+
+`knowledge/06_实验数据/数据表模板.csv`（内部技术路线附录 A）：一行一次测量；`sample_id` 以 `S0` 开头的为现用膜（base）；
+17 个组分列合计 100；`R1_batch` 必填；工艺列首轮固定；性能列填单次测量值。
