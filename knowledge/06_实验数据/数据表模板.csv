@@ -1,2 +1,2 @@
-﻿sample_id,date,line,operator,layer_structure,LL,LLC,LL6,mLL,mLL8,LD,HD,MD,R1,R2,RL,PCR,POE,EVA,FL,TFL,AD,CP,R1_batch,RL_batch,thickness_um,BUR,melt_temp,line_speed,frost_line,die_gap,tensile_MD,tensile_TD,elong_MD,elong_TD,tear_MD,tear_TD,puncture,dart,seal_Tm10,seal_T,seal_Tp10,haze,transmittance,gel_count,pass_flag,note
-S0-01,,,,mono,60.0,0,0,0,0,10.0,5.0,0,25.0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,,,,,,,,,,,,,,示例：base 现用膜，单次测量一行
+﻿sample_id,date,line,operator,layer_structure,source,scheme_code,LL,LLC,LL6,mLL,mLL8,LD,HD,MD,R1,R2,RL,PCR,POE,EVA,FL,TFL,AD,CP,R1_batch,RL_batch,thickness_um,BUR,melt_temp,line_speed,frost_line,die_gap,tensile,tear,puncture,seal,tensile_MD,tensile_TD,tear_MD,tear_TD,elong_MD,elong_TD,dart,seal_Tm10,seal_Tp10,haze,transmittance,gel_count,pass_flag,note
+S0-01,,,,mono,base,,60.0,0,0,0,0,10.0,5.0,0,25.0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,,,,,,,,,,,,,,,,示例：一行一次测量；四项主指标 tensile/tear/puncture/seal 必填（不分 MD/TD；若只有 MD/TD 明细，主指标可留空自动折算）

@@ -26,7 +26,10 @@ def _counter(category: str) -> dict[str, Any]:
 
 @contextmanager
 def track(category: str, label: str = "") -> Iterator[None]:
-    """包住一次外部调用：记录进行中数量、耗时、成功/失败。"""
+    """包住一次外部调用：记录进行中数量、耗时、成功/失败。调用前过一次任务检查点（暂停/取消在这里生效）。"""
+    from . import jobs
+
+    jobs.checkpoint()
     t0 = time.time()
     with _lock:
         _counter(category)["inflight"] += 1
@@ -54,6 +57,11 @@ def note(text: str, category: str = "job", ok: bool = True) -> None:
     """记录一条不计时的事件（任务开始/结束、工具调用等）。"""
     with _lock:
         _events.append({"at": time.time(), "category": category, "label": text, "seconds": None, "ok": ok})
+
+
+def clear_events() -> None:
+    with _lock:
+        _events.clear()
 
 
 def busy() -> bool:
@@ -100,7 +108,8 @@ def overview() -> dict[str, Any]:
         if job["name"] == "discovery":
             running = [n for k, n in state.STAGES if state.stage(k).get("status") == "running"]
             stage_label = running[0] if running else "研发流水线"
-        current = {"name": job["name"], "label": stage_label or job["name"], "elapsed": job["elapsed"]}
+        current = {"name": job["name"], "label": stage_label or job["name"], "elapsed": job["elapsed"],
+                   "paused": job.get("paused", False), "cancelling": job.get("cancelling", False)}
     lines: list[dict[str, Any]] = []
     for cat in ("llm", "search", "embed", "rerank"):
         c = counters.get(cat)

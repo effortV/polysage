@@ -71,9 +71,11 @@ def running(key: str, echo: Callable[[str], None] | None = None):
     try:
         yield
     except Exception as e:  # noqa: BLE001
-        set_stage(key, status="failed", error=f"{type(e).__name__}: {str(e)[:500]}", finished_at=now(),
+        cancelled = type(e).__name__ == "JobCancelled"
+        set_stage(key, status="cancelled" if cancelled else "failed",
+                  error="已取消" if cancelled else f"{type(e).__name__}: {str(e)[:500]}", finished_at=now(),
                   seconds=round(time.time() - t0, 1))
-        log(f"失败 {STAGE_NAMES.get(key, key)}：{e}", echo)
+        log(("已取消 " if cancelled else "失败 ") + STAGE_NAMES.get(key, key) + ("" if cancelled else f"：{e}"), echo)
         raise
     else:
         set_stage(key, status="done", finished_at=now(), seconds=round(time.time() - t0, 1))

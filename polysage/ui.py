@@ -127,6 +127,8 @@ button[data-baseweb="tab"] {font-weight: 500; padding: 0.4rem 0.9rem;}
 .ps-dot {display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #9CA3AF; vertical-align: 1px;}
 .ps-dot.run {background: #1F4E79; animation: ps-pulse 1.4s ease-in-out infinite;}
 .ps-dot.err {background: #B91C1C;}
+.ps-dot.pause {background: #D97706;}
+.st-key-ps_ctl .stButton > button {padding: 0.15rem 0.6rem; font-size: 0.76rem; min-height: 1.7rem; line-height: 1.2;}
 @keyframes ps-pulse {0%, 100% {opacity: 1;} 50% {opacity: 0.3;}}
 .ps-activity-log {margin-top: 0.4rem; padding-top: 0.35rem; border-top: 1px dashed #E5E7EB; color: #6B7280; font-family: ui-monospace, Consolas, monospace; font-size: 0.7rem; line-height: 1.45;}
 .ps-activity-log .t {color: #9CA3AF; margin-right: 6px;}
@@ -145,7 +147,11 @@ def _activity_html(ov: dict) -> str:
     esc = html.escape
     rows: list[str] = []
     cur = ov.get("current")
-    if cur:
+    if cur and cur.get("cancelling"):
+        rows.append(f'<div class="ps-activity-row"><span class="ps-dot err"></span>{esc(cur["label"])} · 正在取消</div>')
+    elif cur and cur.get("paused"):
+        rows.append(f'<div class="ps-activity-row"><span class="ps-dot pause"></span>{esc(cur["label"])} · 已暂停</div>')
+    elif cur:
         rows.append(f'<div class="ps-activity-row"><span class="ps-dot run"></span>{esc(cur["label"])} · 已运行 {activity.fmt_seconds(cur["elapsed"])}</div>')
     elif ov.get("busy"):
         rows.append('<div class="ps-activity-row"><span class="ps-dot run"></span>处理中</div>')
@@ -186,6 +192,34 @@ def _activity_html(ov: dict) -> str:
     return f'<div class="ps-activity">{head}{body}</div>'
 
 
+def _activity_controls() -> None:
+    """面板下的两个小按钮：开始/暂停/继续，删除（取消任务并清空最近事件）。"""
+    from . import activity, jobs
+
+    box = st.container(key="ps_ctl")  # 容器带 key → class st-key-ps_ctl，便于只给这两个按钮缩小样式
+    c1, c2 = box.columns(2)
+    running = jobs.is_running()
+    if running and jobs.is_paused():
+        if c1.button("继续", key="ps_act_resume", help="继续被暂停的任务", **_WIDE_BTN):
+            jobs.resume()
+            st.rerun(scope="fragment")
+    elif running:
+        if c1.button("暂停", key="ps_act_pause", help="在下一次模型/检索调用前暂停", **_WIDE_BTN):
+            jobs.pause()
+            st.rerun(scope="fragment")
+    else:
+        if c1.button("开始", key="ps_act_start", help="从未完成的阶段继续跑研发流水线 ①～⑥", **_WIDE_BTN):
+            jobs.start_discovery()
+            st.rerun(scope="fragment")
+    if c2.button("删除", key="ps_act_delete", help="取消当前任务并清空最近事件", **_WIDE_BTN):
+        jobs.cancel()
+        activity.clear_events()
+        st.rerun(scope="fragment")
+
+
+_WIDE_BTN: dict[str, Any] = {"width": "stretch"} if _supports_str_width() else {"use_container_width": True}
+
+
 def sidebar_activity() -> None:
     """侧栏底部「后台运行」面板：整个服务进程的任务、模型调用、检索与最近事件。
 
@@ -198,6 +232,7 @@ def sidebar_activity() -> None:
     @st.fragment(run_every=3 if busy else 10)
     def _panel() -> None:
         st.markdown(_activity_html(activity.overview()), unsafe_allow_html=True)
+        _activity_controls()
 
     with st.sidebar:
         _panel()
