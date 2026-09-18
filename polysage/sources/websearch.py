@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from .. import activity
+from .. import activity, net
 from ..config import settings
 from .base import SearchHit
 
@@ -31,7 +31,7 @@ def _classify(url: str) -> tuple[str, int]:
 
 
 def _tavily(query: str, limit: int) -> list[SearchHit]:
-    with httpx.Client(timeout=40) as c:
+    with net.client("https://api.tavily.com", timeout=40) as c:
         r = c.post("https://api.tavily.com/search", json={
             "api_key": settings.tavily_api_key, "query": query, "max_results": min(limit, 20),
             "search_depth": "basic", "include_answer": False,
@@ -47,10 +47,11 @@ def _tavily(query: str, limit: int) -> list[SearchHit]:
     return hits
 
 
-DEFAULT_CHAIN = (("duckduckgo", None, 12), ("duckduckgo", "wt-wt", 12), ("bing", "wt-wt", 25),
-                 ("brave", "wt-wt", 12), ("bing", None, 25))
-# 专利等需要 site: 语法的查询：Bing 对 site: 和中文最稳，放前面
-BING_FIRST_CHAIN = (("bing", "wt-wt", 25), ("bing", None, 25), ("duckduckgo", "wt-wt", 12), ("brave", "wt-wt", 12))
+_ENGINE_URL = {"duckduckgo": "https://duckduckgo.com", "brave": "https://search.brave.com", "bing": "https://www.bing.com"}
+# 这台网络：Bing 直连最稳（5～8 s），DuckDuckGo / Brave 要走代理且时断时续，放后面兜底
+DEFAULT_CHAIN = (("bing", None, 25), ("bing", "wt-wt", 25), ("duckduckgo", "wt-wt", 12), ("brave", "wt-wt", 12))
+# 专利等需要 site: 语法的查询：同样 Bing 优先
+BING_FIRST_CHAIN = DEFAULT_CHAIN
 
 
 def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN) -> list[SearchHit]:
@@ -63,7 +64,7 @@ def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN) -> list[Searc
     for round_ in range(2):  # 整条链都失败再等 2 s 重来一遍（网络抖动多为瞬时）
         for backend, reg, timeout in chain:
             try:
-                with DDGS(timeout=timeout) as d:
+                with DDGS(timeout=timeout, proxy=net.proxy_for(_ENGINE_URL.get(backend))) as d:
                     rows = d.text(query, max_results=min(limit, 30), region=reg or region, backend=backend)
             except Exception as e:  # noqa: BLE001
                 last = e

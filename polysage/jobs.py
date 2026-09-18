@@ -95,8 +95,17 @@ def result(name: str) -> dict[str, Any] | None:
         return None if not j else {"done": not j["thread"].is_alive(), "error": j.get("error"), "result": j.get("result")}
 
 
+JOB_NAMES = {"discovery": "研发流水线", "sourcing": "供应商寻源"}
+
+
 def _label(name: str) -> str:
-    return "研发流水线" if name == "discovery" else state.STAGE_NAMES.get(name, name)
+    return JOB_NAMES.get(name) or state.STAGE_NAMES.get(name, name)
+
+
+def start_sourcing(codes: list[str] | None = None, **kw: Any) -> bool:
+    from . import sourcing
+
+    return start("sourcing", lambda: sourcing.run(codes, **kw))
 
 
 def start(name: str, fn: Callable[[], Any]) -> bool:

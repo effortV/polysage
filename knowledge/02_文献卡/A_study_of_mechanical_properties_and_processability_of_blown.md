@@ -1,22 +1,22 @@
-# A study of mechanical properties and processability of blown films using b-LLDPE
+# A Study of Mechanical Properties and Processability of Blown Films using b-LLDPE
 
 - 类型：literature
-- 来源：A study of mechanical properties and processability of blown films using b-LLDPE and LDPE blends（openalex，2010）http://eprints.kfupm.edu.sa/136335/1/Complete_Thesis.pdf
+- 来源：A Study of Mechanical Properties and Processability of Blown Films using b-LLDPE and LDPE Blends（openalex，2010）https://eprints.kfupm.edu.sa/id/eprint/136335/1/Complete_Thesis.pdf
 
 ## 出处
-Wael Sulaiman Fallatah, Research Publication Repository of King Fahd University of Petroleum and Minerals, 2010, http://eprints.kfupm.edu.sa/136335/1/Complete_Thesis.pdf
+Wail Sulaiman Falath, A Study of Mechanical Properties and Processability of Blown Films using b-LLDPE and LDPE Blends, King Fahd University of Petroleum and Minerals, 2010, https://eprints.kfupm.edu.sa/id/eprint/136335/1/Complete_Thesis.pdf
 
 ## 研究体系
-材料：b-LLDPE与LDPE共混物；工艺：吹塑薄膜；膜厚：资料未提供
+材料：b-LLDPE（丁烯线性低密度聚乙烯）与 LDPE（低密度聚乙烯）共混物；工艺：吹塑薄膜；膜厚：资料未提供
 
 ## 结论（只记与本项目有关的）
-- 资料未提供
+- 资料未提供与本项目目标（四项性能≥base且降本）直接相关的具体结论列表
 
 ## 可复用数据点
-- 资料未提供
+- 资料未提供可复用的具体数值数据点
 
 ## 可信度等级
 3
 
 ## 与本项目的关系
-该研究涉及b-LLDPE与LDPE共混吹塑薄膜的力学性能和加工性，与本项目LLDPE/LDPE/HDPE/再生料共混吹塑膜降本目标直接相关，但提供的摘要未包含具体结论或可复用数据。
+该资料研究b-LLDPE/LDPE共混吹塑薄膜的力学性能与加工性，与本项目LLDPE/LDPE共混体系直接相关，但摘要未提供具体性能数值或降本结论，需查阅全文获取可对比的定量数据。

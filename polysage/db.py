@@ -203,6 +203,51 @@ CREATE TABLE IF NOT EXISTS recommend_runs (
     output_json TEXT,
     note TEXT
 );
+
+-- 供应商寻源：厂商档案与网查/询价得到的报价
+CREATE TABLE IF NOT EXISTS suppliers (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT,
+    region TEXT,
+    contact TEXT,
+    url TEXT,
+    materials TEXT,
+    notes TEXT,
+    credibility INTEGER DEFAULT 3,
+    status TEXT DEFAULT '网查',
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS supplier_quotes (
+    id INTEGER PRIMARY KEY,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    material_code TEXT NOT NULL,
+    grade TEXT,
+    price REAL NOT NULL,
+    unit TEXT DEFAULT '元/吨',
+    basis TEXT,
+    moq TEXT,
+    quote_date TEXT,
+    source_url TEXT,
+    evidence TEXT,
+    credibility INTEGER DEFAULT 3,
+    status TEXT DEFAULT '网查',
+    in_rfq INTEGER DEFAULT 0,
+    actual_price REAL,
+    note TEXT,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_quotes_mat ON supplier_quotes(material_code, status);
+
+CREATE TABLE IF NOT EXISTS sourcing_runs (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    codes_json TEXT,
+    summary_json TEXT,
+    note TEXT
+);
 """
 
 # 旧库升级：materials 表新增列（幂等）

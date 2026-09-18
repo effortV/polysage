@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from .. import net
 from ..config import settings
 from .base import SearchHit, get_json, normalize_doi
 
@@ -89,7 +90,7 @@ def search_sciencedirect(query: str, limit: int = 25, year_from: int | None = No
     body: dict[str, Any] = {"qs": query, "show": min(limit, 100), "sortBy": "relevance"}
     if year_from:
         body["date"] = f"{year_from}-2100"
-    with httpx.Client(timeout=settings.http_timeout) as c:
+    with net.client(SCIDIR, timeout=settings.http_timeout) as c:
         r = c.put(SCIDIR, headers={**_headers(), "Content-Type": "application/json"}, json=body)
     if r.status_code >= 400:
         raise RuntimeError(f"ScienceDirect {r.status_code}: {r.text[:200]}")
@@ -109,7 +110,7 @@ def get_abstract(doi: str) -> str:
 def get_fulltext(doi: str) -> str | None:
     """尝试取全文纯文本；无权限返回 None。"""
     try:
-        with httpx.Client(timeout=90.0, follow_redirects=True) as c:
+        with net.client(ARTICLE, timeout=90.0, follow_redirects=True) as c:
             r = c.get(ARTICLE + normalize_doi(doi), headers={**_headers(), "Accept": "text/plain"})
         if r.status_code >= 400:
             return None

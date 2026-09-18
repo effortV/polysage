@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
+from .. import net
 from .base import SearchHit, get_json, get_text
 
 GP_QUERY = "https://patents.google.com/xhr/query"
@@ -210,7 +211,7 @@ def search_lens(query: str, limit: int = 20) -> list[SearchHit]:
 
     body = {"query": {"query_string": {"query": query}}, "size": min(limit, 50),
             "include": ["lens_id", "biblio", "abstract", "doc_key"]}
-    with httpx.Client(timeout=40) as c:
+    with net.client("https://api.lens.org", timeout=40) as c:
         r = c.post("https://api.lens.org/patent/search", headers={"Authorization": f"Bearer {token}"}, json=body)
     if r.status_code >= 400:
         raise RuntimeError(f"Lens {r.status_code}: {r.text[:200]}")

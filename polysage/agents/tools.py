@@ -313,6 +313,37 @@ def scheme_trial_kit(code: str, batch_kg: float = 25.0, n_samples: int = 3):
     return "已生成：" + "；".join(str(p) for p in paths), []
 
 
+@tool("supplier_quotes", "查看某种材料已找到的厂商报价（网查/询价），与现价比较；没有结果时提示先寻源。",
+      {"code": {"type": "string", "description": "材料代码，如 LL、LLC、R1"}, "top": {"type": "integer", "description": "返回条数，默认 8"}}, ["code"])
+def supplier_quotes(code: str, top: int = 8):
+    from .. import sourcing
+
+    rows = [r for r in sourcing.compare(code) if r["kind"] != "行情"][:top]
+    if not rows:
+        return sourcing.summary_text(code) + " 可调用 find_suppliers 立即寻源。", []
+    lines = [sourcing.summary_text(code)]
+    for r in rows:
+        d = f"{r['diff']:+.0f}（{r['diff_pct']:+.1f}%）" if r.get("diff") is not None else "-"
+        lines.append(f"- {r['supplier']}（{r['kind']}，{r['region'] or '地区不详'}）{r['grade'] or ''} {r['price']:.0f} 元/吨，{r['basis'] or '口径不详'}，"
+                     f"{r['quote_date'] or '日期不详'}，与现价 {d}，可信度 {r['credibility']}，来源 {r['source_url'][:60]}")
+    return "\n".join(lines) + "\n（网查价需询价核实；在“供应商寻源”页可加入询价清单并登记实价）", []
+
+
+@tool("find_suppliers", "立即为某种材料在网上寻找厂商/贸易商报价（约 1 分钟），入库后返回比较结果。",
+      {"code": {"type": "string", "description": "材料代码，如 LL、LLC、R1"},
+       "extra": {"type": "string", "description": "补充关键词，如地区、牌号"}}, ["code"])
+def find_suppliers(code: str, extra: str = ""):
+    from .. import sourcing
+    from ..formulation.materials import get_material
+
+    m = get_material(code)
+    if not m:
+        return f"没有材料 {code}", []
+    r = sourcing.source_material(m, depth="快", extra=extra or "", pages_per_query=2)
+    sourcing.write_report({code: sourcing._compare_summary(code)})
+    return f"寻源完成：{r['n_offers']} 条报价（新增 {r['n_new']}）。\n" + supplier_quotes(code)[0], []
+
+
 @tool("price_report", "读取最新的价格变动报告与最近价格事件（谁变了、现配方成本、哪些方案排名变化）。", {})
 def price_report():
     from .. import pricing

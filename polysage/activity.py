@@ -104,7 +104,7 @@ def overview() -> dict[str, Any]:
     job = jobs.info()
     current: dict[str, Any] | None = None
     if job:
-        stage_label = state.STAGE_NAMES.get(job["name"], "")
+        stage_label = jobs._label(job["name"])
         if job["name"] == "discovery":
             running = [n for k, n in state.STAGES if state.stage(k).get("status") == "running"]
             stage_label = running[0] if running else "研发流水线"

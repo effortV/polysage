@@ -17,7 +17,7 @@ import httpx
 import numpy as np
 
 from .config import settings
-from . import activity
+from . import activity, net
 
 
 class LLMNotConfigured(RuntimeError):
@@ -85,7 +85,7 @@ def _stream_once(url: str, payload: dict[str, Any], timeout: float) -> dict[str,
     reasoning: list[str] = []
     calls: dict[int, dict[str, Any]] = {}
     finish, usage = "", {}
-    with httpx.Client(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
+    with net.client(url, timeout=httpx.Timeout(timeout, connect=30.0)) as client:
         with client.stream("POST", url, headers=_headers("chat"), json=payload) as r:
             if r.status_code == 429 or r.status_code >= 500:
                 raise _Retryable(f"{r.status_code}: {r.read()[:300]!r}")
@@ -172,7 +172,7 @@ def _post_raw(path: str, payload: dict[str, Any], timeout: float, retries: int, 
     last: Exception | None = None
     for attempt in range(retries):
         try:
-            with httpx.Client(timeout=timeout) as client:
+            with net.client(url, timeout=timeout) as client:
                 r = client.post(url, headers=_headers(kind), json=payload)
             if r.status_code == 429 or r.status_code >= 500:
                 last = LLMError(f"{r.status_code}: {r.text[:300]}")
@@ -251,7 +251,7 @@ def chat_stream(messages: list[dict[str, Any]], *, temperature: float = 0.3, max
     url = _base_url("chat") + "/chat/completions"
     payload = {"model": model or settings.chat_model, "messages": messages, "temperature": temperature,
                "max_tokens": max_tokens, "stream": True, **_thinking_payload(thinking)}
-    with activity.track("llm", payload["model"]), httpx.Client(timeout=180.0) as client:
+    with activity.track("llm", payload["model"]), net.client(url, timeout=180.0) as client:
         with client.stream("POST", url, headers=_headers("chat"), json=payload) as r:
             if r.status_code >= 400:
                 raise LLMError(f"SiliconFlow {r.status_code}: {r.read()[:500]!r}")
@@ -283,6 +283,26 @@ def chat_json(messages: list[dict[str, Any]], *, temperature: float = 0.2, max_t
         return parse_json_loose(res.content)
 
 
+def _salvage_truncated(text: str) -> Any:
+    """输出被 max_tokens 截断的列表型 JSON（如 {"offers": [ {...}, {...}, {"a": ）：丢掉最后一个不完整对象，补上 ]}。"""
+    starts = [p for p in (text.find("{"), text.find("[")) if p != -1]
+    if not starts:
+        return None
+    body = text[min(starts):]
+    while True:
+        k = body.rfind("}")
+        if k <= 0:
+            return None
+        head = body[:k + 1]
+        for tail in ("]}", "}", "]", "]}}", "}}"):
+            try:
+                out = json.loads(head + tail)
+                return out
+            except json.JSONDecodeError:
+                continue
+        body = body[:k]  # 再往前找一个完整对象
+
+
 def parse_json_loose(text: str) -> Any:
     text = text.strip()
     if text.startswith("```"):
@@ -300,6 +320,9 @@ def parse_json_loose(text: str) -> Any:
                 return json.loads(text[i:j + 1])
             except json.JSONDecodeError:
                 continue
+    salvaged = _salvage_truncated(text)
+    if salvaged is not None:
+        return salvaged
     raise LLMError("模型返回了空内容（多为思考占满 max_tokens 或服务超时）" if not text else f"模型未返回可解析的 JSON：{text[:200]}")
 
 

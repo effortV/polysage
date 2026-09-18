@@ -30,6 +30,7 @@ page = st.navigation(
         "数据": [
             st.Page("app_pages/knowledge.py", title="知识库", icon=":material/library_books:"),
             st.Page("app_pages/materials.py", title="原料与价格", icon=":material/inventory_2:"),
+            st.Page("app_pages/sourcing.py", title="供应商寻源", icon=":material/storefront:"),
             st.Page("app_pages/experiments.py", title="实验与模型", icon=":material/analytics:"),
         ],
         "系统": [st.Page("app_pages/settings.py", title="设置", icon=":material/settings:")],

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .. import activity
+from .. import activity, net
 from ..config import settings
 
 # 可信度等级（数字越小越可信）：与内部技术路线 3.7 一致
@@ -73,7 +73,7 @@ def _get_json(url: str, params: dict | None, hdrs: dict, timeout: float | None, 
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            with httpx.Client(timeout=timeout or settings.http_timeout, follow_redirects=True) as c:
+            with net.client(url, timeout=timeout or settings.http_timeout, follow_redirects=True) as c:
                 r = c.get(url, params=params, headers=hdrs)
             if r.status_code == 429:
                 time.sleep(2.0 * (attempt + 1))
@@ -99,7 +99,7 @@ def get_text(url: str, params: dict | None = None, headers: dict | None = None, 
                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
     if headers:
         hdrs.update(headers)
-    with activity.track("search", _host(url)), httpx.Client(timeout=timeout or settings.http_timeout, follow_redirects=True) as c:
+    with activity.track("search", _host(url)), net.client(url, timeout=timeout or settings.http_timeout, follow_redirects=True) as c:
         r = c.get(url, params=params, headers=hdrs)
         r.raise_for_status()
         return r.headers.get("content-type", ""), r.text
@@ -110,7 +110,7 @@ def get_bytes(url: str, headers: dict | None = None, timeout: float | None = Non
                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
     if headers:
         hdrs.update(headers)
-    with activity.track("search", _host(url)), httpx.Client(timeout=timeout or 90.0, follow_redirects=True) as c:
+    with activity.track("search", _host(url)), net.client(url, timeout=timeout or 90.0, follow_redirects=True) as c:
         r = c.get(url, headers=hdrs)
         r.raise_for_status()
         return r.headers.get("content-type", ""), r.content
