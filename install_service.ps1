@@ -26,15 +26,17 @@ $serveAction = New-ScheduledTaskAction -Execute $ps -WorkingDirectory $root `
 $serveSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+# 看门狗：除登录触发外，每 5 分钟再触发一次；任务还在跑时被 IgnoreNew 忽略，意外退出（如被 Ctrl+C / 注销）后 5 分钟内自动拉起
+$watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
 Register-ScheduledTask -TaskName "PolySage-Server" -Action $serveAction -Principal $principal -Settings $serveSettings `
-    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $user) `
+    -Trigger @((New-ScheduledTaskTrigger -AtLogOn -User $user), $watchdog) `
     -Description "HDU×恒诺 包装膜（AI4S）：登录后常驻 http://<本机IP>:8511" -Force | Out-Null
 
 # 外网隧道（cloudflared）：与服务同样的常驻设置
 $tunnelAction = New-ScheduledTaskAction -Execute $ps -WorkingDirectory $root `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$root\tunnel.ps1`""
 Register-ScheduledTask -TaskName "PolySage-Tunnel" -Action $tunnelAction -Principal $principal -Settings $serveSettings `
-    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $user) `
+    -Trigger @((New-ScheduledTaskTrigger -AtLogOn -User $user), $watchdog) `
     -Description "Cloudflare 隧道：把本机 8511 暴露到外网（需 .env 设 APP_PASSWORD）" -Force | Out-Null
 
 # 每日备份
