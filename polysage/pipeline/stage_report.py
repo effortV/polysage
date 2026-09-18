@@ -88,9 +88,12 @@ def pick_first_round(top: list[dict[str, Any]], brief: str) -> dict[str, Any]:
     try:
         data = llm.chat_json([{"role": "system", "content": "你是项目技术负责人，输出严格 JSON。"},
                               {"role": "user", "content": PICK_PROMPT.format(brief=brief, top=listing)}], max_tokens=1500, thinking=1024)
-    except llm.LLMNotConfigured:
-        picks = [{"rank": r["rank"], "reason": "（LLM 未配置：按排名取前 6）", "watch": ""} for r in top[:6]]
-        return {"picks": picks, "advice": "工艺固定、同批再生料、留样；LLM 配置后可重新生成建议。"}
+    except (llm.LLMNotConfigured, llm.LLMError) as e:
+        # 模型没配或这次调用失败：不让整个报告阶段挂掉，按排名取前 6 并注明原因
+        why = "LLM 未配置" if isinstance(e, llm.LLMNotConfigured) else f"模型调用失败：{str(e)[:80]}"
+        state.log(f"首轮入选改为按排名取前 6（{why}）")
+        picks = [{"rank": r["rank"], "reason": f"（{why}：按排名取前 6）", "watch": ""} for r in top[:6]]
+        return {"picks": picks, "advice": "工艺固定、同批再生料、留样；模型恢复后重跑 ⑤ 可重新生成建议。"}
     return data if isinstance(data, dict) else {"picks": [], "advice": ""}
 
 

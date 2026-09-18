@@ -49,8 +49,9 @@ def _ddg(query: str, limit: int, region: str) -> list[SearchHit]:
     from ddgs import DDGS
 
     hits = []
-    with DDGS() as d:
-        for it in d.text(query, max_results=min(limit, 30), region=region):
+    # ddgs 9.x 默认 backend="auto" 会轮询 grokipedia 等国内连不上的引擎（每次超时 30 s），限定为实测可用的三个
+    with DDGS(timeout=15) as d:
+        for it in d.text(query, max_results=min(limit, 30), region=region, backend="duckduckgo,brave,bing"):
             url = it.get("href") or it.get("url") or ""
             st, cred = _classify(url)
             hits.append(SearchHit(provider="duckduckgo", external_id=url, title=it.get("title", ""),

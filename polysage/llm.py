@@ -51,14 +51,99 @@ def _base_url(kind: str = "chat") -> str:
 
 
 def _thinking_payload(thinking: bool | int | None) -> dict[str, Any]:
-    """thinking: None/False = 关闭；True = 模型默认（完整思考）；int = 思考 token 预算。不支持的服务不发该参数。"""
+    """thinking: None/False = 关闭；True = 模型默认（完整思考）；int = 思考 token 预算。不支持的服务不发该参数。
+
+    ZJU（vLLM 部署的 Qwen）不认顶层 enable_thinking，只认 chat_template_kwargs，而且不能限预算：
+    不限预算的思考动辄上百秒、还会把 max_tokens 吃光导致答案为空，所以 ZJU 上只有 thinking=True 才开思考。
+    """
     if not settings.chat_supports_thinking:
         return {}
+    if settings.llm_profile == "zju":
+        return {"chat_template_kwargs": {"enable_thinking": thinking is True}}
     if thinking is None or thinking is False:
         return {"enable_thinking": False}
     if thinking is True:
         return {}
     return {"enable_thinking": True, "thinking_budget": int(thinking)}
+
+
+def _effective_max_tokens(max_tokens: int, thinking: bool | int | None) -> int:
+    """部分服务把思考 token 计入 max_tokens；给了思考预算就把预算加到上限里，避免答案被截空。"""
+    if isinstance(thinking, int) and not isinstance(thinking, bool):
+        return max_tokens + int(thinking)
+    return max_tokens
+
+
+class _Retryable(Exception):
+    """429 / 5xx：可重试。"""
+
+
+def _stream_once(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """流式请求，拼成与非流式相同的响应结构（content / reasoning_content / tool_calls / usage）。"""
+    content: list[str] = []
+    reasoning: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    finish, usage = "", {}
+    with httpx.Client(timeout=httpx.Timeout(timeout, connect=30.0)) as client:
+        with client.stream("POST", url, headers=_headers("chat"), json=payload) as r:
+            if r.status_code == 429 or r.status_code >= 500:
+                raise _Retryable(f"{r.status_code}: {r.read()[:300]!r}")
+            if r.status_code >= 400:
+                raise LLMError(f"{settings.llm_profile} {r.status_code}: {r.read()[:500]!r}")
+            for line in r.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                body = line[5:].strip()
+                if body == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(body)
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                for ch in chunk.get("choices") or []:
+                    delta = ch.get("delta") or {}
+                    if delta.get("content"):
+                        content.append(delta["content"])
+                    if delta.get("reasoning_content"):
+                        reasoning.append(delta["reasoning_content"])
+                    elif delta.get("reasoning"):
+                        reasoning.append(delta["reasoning"])
+                    for tc in delta.get("tool_calls") or []:
+                        idx = int(tc.get("index") or 0)
+                        cur = calls.setdefault(idx, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+                        if tc.get("id"):
+                            cur["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name") and not cur["function"]["name"]:
+                            cur["function"]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            cur["function"]["arguments"] += fn["arguments"]
+                    if ch.get("finish_reason"):
+                        finish = ch["finish_reason"]
+    msg: dict[str, Any] = {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning)}
+    if calls:
+        msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+    return {"choices": [{"message": msg, "finish_reason": finish}], "usage": usage}
+
+
+def _post_stream(payload: dict[str, Any], timeout: float = 600.0, retries: int = 3) -> dict[str, Any]:
+    """对话请求走流式：边生成边收，网关（Cloudflare 100 s）不会因为长时间没字节而 524。"""
+    url = _base_url("chat") + "/chat/completions"
+    payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+    last: Exception | None = None
+    with activity.track("llm", payload.get("model", "")):
+        for attempt in range(retries):
+            try:
+                return _stream_once(url, payload, timeout)
+            except _Retryable as e:
+                last = LLMError(str(e))
+                time.sleep(1.5 * (attempt + 1))
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as e:
+                last = e
+                time.sleep(2.0 * (attempt + 1))
+    raise LLMError(f"LLM 请求失败（{_base_url('chat')}）: {last}")
 
 
 def _post(path: str, payload: dict[str, Any], timeout: float = 300.0, retries: int = 3, kind: str = "chat") -> dict[str, Any]:
@@ -97,12 +182,14 @@ def chat(
     json_mode: bool = False,
     model: str | None = None,
     thinking: bool | int | None = None,
+    stream: bool | None = None,
+    _retry: bool = True,
 ) -> ChatResult:
     payload: dict[str, Any] = {
         "model": model or settings.chat_model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens,
+        "max_tokens": _effective_max_tokens(max_tokens, thinking),
         **_thinking_payload(thinking),
     }
     if tools:
@@ -111,9 +198,18 @@ def chat(
             payload["tool_choice"] = tool_choice
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-    data = _post("/chat/completions", payload)
+    if stream is None:
+        stream = not tools  # 无工具调用时默认流式，防网关超时；工具调用保持非流式（各家流式工具增量格式不一）
+    data = _post_stream(payload) if stream else _post("/chat/completions", payload)
     choice = (data.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
+    if _retry and not (msg.get("content") or "").strip() and not msg.get("tool_calls"):
+        # 思考把 token 吃光 / 模型空答：关思考、放大上限再试一次；仍为空就用思考内容兜底
+        res2 = chat(messages, tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens * 2,
+                    json_mode=json_mode, model=model, thinking=False, stream=stream, _retry=False)
+        if res2.content.strip() or res2.tool_calls:
+            return res2
+        msg = {**msg, "content": (msg.get("reasoning_content") or msg.get("reasoning") or "")}
     tool_calls = []
     for tc in msg.get("tool_calls") or []:
         fn = tc.get("function") or {}
@@ -162,7 +258,12 @@ def chat_json(messages: list[dict[str, Any]], *, temperature: float = 0.2, max_t
               thinking: bool | int | None = None) -> Any:
     """要求模型返回 JSON 并解析；解析失败时尝试截取首尾大括号。默认不开思考（结构化抽取任务不需要）。"""
     res = chat(messages, temperature=temperature, max_tokens=max_tokens, json_mode=True, thinking=thinking)
-    return parse_json_loose(res.content)
+    try:
+        return parse_json_loose(res.content)
+    except LLMError:
+        nudge = messages + [{"role": "user", "content": "上一次回复不是合法 JSON。只输出一个 JSON 对象本身，不要解释、不要代码块。"}]
+        res = chat(nudge, temperature=0, max_tokens=max_tokens * 2, json_mode=True, thinking=False)
+        return parse_json_loose(res.content)
 
 
 def parse_json_loose(text: str) -> Any:
@@ -182,7 +283,7 @@ def parse_json_loose(text: str) -> Any:
                 return json.loads(text[i:j + 1])
             except json.JSONDecodeError:
                 continue
-    raise LLMError(f"模型未返回可解析的 JSON：{text[:200]}")
+    raise LLMError("模型返回了空内容（多为思考占满 max_tokens 或服务超时）" if not text else f"模型未返回可解析的 JSON：{text[:200]}")
 
 
 def embed(texts: list[str], batch: int = 32) -> np.ndarray | None:
