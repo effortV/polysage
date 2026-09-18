@@ -93,3 +93,26 @@ def test_chat_json_retries_on_unparsable(monkeypatch):
     monkeypatch.setattr(llm, "chat", fake_chat)
     assert llm.chat_json([{"role": "user", "content": "x"}]) == {"a": 1}
     assert len(seen) == 2 and "只输出一个 JSON" in seen[1][-1]["content"]
+
+
+def test_stream_retries_on_ssl_eof_then_falls_back_to_non_stream(monkeypatch):
+    import ssl
+
+    monkeypatch.setattr(settings, "sf_api_key", "fake")
+    monkeypatch.setattr(settings, "llm_profile", "siliconflow")
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    attempts: list[str] = []
+
+    def bad_stream(url, payload, timeout):
+        attempts.append("stream")
+        raise ssl.SSLError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol")
+
+    def ok_raw(path, payload, timeout, retries, kind):
+        attempts.append("raw")
+        return {"choices": [{"message": {"content": "{\"ok\": 1}"}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr(llm, "_stream_once", bad_stream)
+    monkeypatch.setattr(llm, "_post_raw", ok_raw)
+    assert llm.chat_json([{"role": "user", "content": "x"}]) == {"ok": 1}
+    assert attempts == ["stream", "stream", "stream", "raw"]
+    assert any("模型请求重试" in e["label"] for e in llm.activity.snapshot()["events"])

@@ -48,14 +48,28 @@ def _tavily(query: str, limit: int) -> list[SearchHit]:
 def _ddg(query: str, limit: int, region: str) -> list[SearchHit]:
     from ddgs import DDGS
 
+    # ddgs 9.x 默认 backend="auto" 会轮询 grokipedia 等国内连不上的引擎（每次超时 30 s）。
+    # 这边网络到各引擎时好时坏，按顺序试几种“引擎 + 地区”组合，拿到结果就停。
+    rows: list[dict] = []
+    last: Exception | None = None
+    for backend, reg, timeout in (("duckduckgo", region, 12), ("duckduckgo", "wt-wt", 12), ("bing", "wt-wt", 25),
+                                  ("brave", "wt-wt", 12), ("bing", region, 25)):
+        try:
+            with DDGS(timeout=timeout) as d:
+                rows = d.text(query, max_results=min(limit, 30), region=reg, backend=backend)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            continue
+        if rows:
+            break
+    if not rows:
+        raise RuntimeError(f"所有搜索引擎都没返回结果：{last}")
     hits = []
-    # ddgs 9.x 默认 backend="auto" 会轮询 grokipedia 等国内连不上的引擎（每次超时 30 s），限定为实测可用的三个
-    with DDGS(timeout=15) as d:
-        for it in d.text(query, max_results=min(limit, 30), region=region, backend="duckduckgo,brave,bing"):
-            url = it.get("href") or it.get("url") or ""
-            st, cred = _classify(url)
-            hits.append(SearchHit(provider="duckduckgo", external_id=url, title=it.get("title", ""),
-                                  source_type=st, url=url, abstract=it.get("body", ""), credibility=cred))
+    for it in rows:
+        url = it.get("href") or it.get("url") or ""
+        st, cred = _classify(url)
+        hits.append(SearchHit(provider="duckduckgo", external_id=url, title=it.get("title", ""),
+                              source_type=st, url=url, abstract=it.get("body", ""), credibility=cred))
     return hits
 
 

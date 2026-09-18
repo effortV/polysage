@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -128,22 +129,37 @@ def _stream_once(url: str, payload: dict[str, Any], timeout: float) -> dict[str,
     return {"choices": [{"message": msg, "finish_reason": finish}], "usage": usage}
 
 
-def _post_stream(payload: dict[str, Any], timeout: float = 600.0, retries: int = 3) -> dict[str, Any]:
-    """对话请求走流式：边生成边收，网关（Cloudflare 100 s）不会因为长时间没字节而 524。"""
+def _post_stream(payload: dict[str, Any], timeout: float = 600.0, retries: int = 4) -> dict[str, Any]:
+    """对话请求走流式：边生成边收，网关（Cloudflare 100 s）不会因为长时间没字节而 524。
+
+    网络抖动（SSL EOF、连接被掐）重试；最后一次改走非流式，换一条路径。
+    """
     url = _base_url("chat") + "/chat/completions"
-    payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+    stream_payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
     last: Exception | None = None
     with activity.track("llm", payload.get("model", "")):
         for attempt in range(retries):
             try:
-                return _stream_once(url, payload, timeout)
+                if attempt == retries - 1:
+                    return _post_raw("/chat/completions", payload, timeout, 1, "chat")
+                return _stream_once(url, stream_payload, timeout)
             except _Retryable as e:
                 last = LLMError(str(e))
+                activity.note(f"模型请求重试 {attempt + 1}/{retries}：HTTP {str(e)[:3]}", category="llm", ok=False)
                 time.sleep(1.5 * (attempt + 1))
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as e:
+            except LLMError as e:
+                if attempt == retries - 1 or "请求失败" not in str(e):
+                    raise
                 last = e
+            except _NET_ERRORS as e:
+                last = e
+                activity.note(f"模型请求重试 {attempt + 1}/{retries}：{type(e).__name__}", category="llm", ok=False)
                 time.sleep(2.0 * (attempt + 1))
     raise LLMError(f"LLM 请求失败（{_base_url('chat')}）: {last}")
+
+
+# 网络层可重试的异常：httpx 的超时/断连/协议错误，以及被中间设备掐断时冒出来的裸 SSL / OS 错误
+_NET_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError, ssl.SSLError, ConnectionError, OSError)
 
 
 def _post(path: str, payload: dict[str, Any], timeout: float = 300.0, retries: int = 3, kind: str = "chat") -> dict[str, Any]:
@@ -165,9 +181,10 @@ def _post_raw(path: str, payload: dict[str, Any], timeout: float, retries: int, 
             if r.status_code >= 400:
                 raise LLMError(f"{settings.llm_profile if kind == 'chat' else 'SiliconFlow'} {r.status_code}: {r.text[:500]}")
             return r.json()
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as e:
-            # 超时 / 断连 / 代理掐断：退避重试
+        except _NET_ERRORS as e:
+            # 超时 / 断连 / SSL EOF / 代理掐断：退避重试
             last = e
+            activity.note(f"模型请求重试 {attempt + 1}/{retries}：{type(e).__name__}", category="llm", ok=False)
             time.sleep(2.0 * (attempt + 1))
     raise LLMError(f"LLM 请求失败（{_base_url(kind)}）: {last}")
 
