@@ -32,8 +32,9 @@ powercfg /change hibernate-timeout-ac 0
 - **外网访问（隧道）**：`tunnel.ps1` 用 Cloudflare Tunnel 把本机 8511 暴露到公网，计划任务 `PolySage-Tunnel` 登录后自动跑。
   - 必须先在 `.env` 里设 `APP_PASSWORD=你的口令`（打开网页要先输口令），没设它会拒绝开隧道。
   - 不配 token 时是临时隧道：随机网址 `https://xxx.trycloudflare.com`，每次重启会变，当前网址写在 `data/tunnel_url.txt`，侧栏「后台运行」也显示。
-  - 要固定网址：Cloudflare 账号 + 一个托管在 Cloudflare 的域名 → Zero Trust → Networks → Tunnels → 新建，公共主机名指向 `http://localhost:8511`，
-    把 token 填到 `.env` 的 `CLOUDFLARE_TUNNEL_TOKEN`，重启 `PolySage-Tunnel`。
+  - **固定网址 https://hn.hduai4s.cn（已配好）**：域名 `hduai4s.cn` 托管在 Cloudflare（NS = ada/cartman.ns.cloudflare.com），命名隧道 `hdu-film`，
+    配置在 `%USERPROFILE%\.cloudflared\hdu-film.yml`（tunnel id + 凭据 json，勿入库）；`tunnel.ps1` 检测到该文件就走固定模式。
+    换机器迁移时：`cloudflared tunnel login` → 把 `.cloudflared` 目录下的 cert.pem、`f1a95f08-…json`、`hdu-film.yml` 拷过去即可。
   - cloudflared 安装：`winget install Cloudflare.cloudflared`。国内访问 Cloudflare 慢的话可换 cpolar / 花生壳，把 `tunnel.ps1` 里的命令换掉即可。
 - 停止 / 重启：任务计划程序里结束 `PolySage-Server`，或 `Stop-ScheduledTask -TaskName PolySage-Server` 后 `Start-ScheduledTask -TaskName PolySage-Server`。
 - 改了代码后需要重启服务才生效（服务器模式不热重载）。
