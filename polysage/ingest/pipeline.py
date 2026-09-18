@@ -90,7 +90,7 @@ def _try_fulltext(hit: SearchHit) -> tuple[str, str, str]:
             ] if x)
             if p.get("assignee") and not hit.venue:
                 hit.venue = p["assignee"]
-            return body, "", "已抓取专利全文"
+            return body, "", p.get("note") or "已抓取专利全文"
         except Exception as e:  # noqa: BLE001
             return "", "", f"专利页抓取失败：{str(e)[:80]}"
     if hit.source_type in ("web", "tds", "price"):

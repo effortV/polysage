@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from typing import Any
 
 import httpx
@@ -45,23 +47,32 @@ def _tavily(query: str, limit: int) -> list[SearchHit]:
     return hits
 
 
-def _ddg(query: str, limit: int, region: str) -> list[SearchHit]:
+DEFAULT_CHAIN = (("duckduckgo", None, 12), ("duckduckgo", "wt-wt", 12), ("bing", "wt-wt", 25),
+                 ("brave", "wt-wt", 12), ("bing", None, 25))
+# 专利等需要 site: 语法的查询：Bing 对 site: 和中文最稳，放前面
+BING_FIRST_CHAIN = (("bing", "wt-wt", 25), ("bing", None, 25), ("duckduckgo", "wt-wt", 12), ("brave", "wt-wt", 12))
+
+
+def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN) -> list[SearchHit]:
     from ddgs import DDGS
 
     # ddgs 9.x 默认 backend="auto" 会轮询 grokipedia 等国内连不上的引擎（每次超时 30 s）。
     # 这边网络到各引擎时好时坏，按顺序试几种“引擎 + 地区”组合，拿到结果就停。
     rows: list[dict] = []
     last: Exception | None = None
-    for backend, reg, timeout in (("duckduckgo", region, 12), ("duckduckgo", "wt-wt", 12), ("bing", "wt-wt", 25),
-                                  ("brave", "wt-wt", 12), ("bing", region, 25)):
-        try:
-            with DDGS(timeout=timeout) as d:
-                rows = d.text(query, max_results=min(limit, 30), region=reg, backend=backend)
-        except Exception as e:  # noqa: BLE001
-            last = e
-            continue
+    for round_ in range(2):  # 整条链都失败再等 2 s 重来一遍（网络抖动多为瞬时）
+        for backend, reg, timeout in chain:
+            try:
+                with DDGS(timeout=timeout) as d:
+                    rows = d.text(query, max_results=min(limit, 30), region=reg or region, backend=backend)
+            except Exception as e:  # noqa: BLE001
+                last = e
+                continue
+            if rows:
+                break
         if rows:
             break
+        time.sleep(2)
     if not rows:
         raise RuntimeError(f"所有搜索引擎都没返回结果：{last}")
     hits = []
@@ -73,18 +84,18 @@ def _ddg(query: str, limit: int, region: str) -> list[SearchHit]:
     return hits
 
 
-def search(query: str, limit: int = 10, region: str = "cn-zh") -> list[SearchHit]:
+def search(query: str, limit: int = 10, region: str = "cn-zh", *, bing_first: bool = False) -> list[SearchHit]:
     with activity.track("search", "web"):
-        return _search(query, limit, region)
+        return _search(query, limit, region, bing_first)
 
 
-def _search(query: str, limit: int, region: str) -> list[SearchHit]:
+def _search(query: str, limit: int, region: str, bing_first: bool = False) -> list[SearchHit]:
     if settings.tavily_api_key:
         try:
             return _tavily(query, limit)
         except Exception:  # noqa: BLE001
             pass
     try:
-        return _ddg(query, limit, region)
+        return _ddg(query, limit, region, BING_FIRST_CHAIN if bing_first else DEFAULT_CHAIN)
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"网页搜索失败（DuckDuckGo）：{e}")
