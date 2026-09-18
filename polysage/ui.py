@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import inspect
+import time
 from typing import Any
 
 import streamlit as st
@@ -199,22 +200,26 @@ def _activity_controls() -> None:
     box = st.container(key="ps_ctl")  # 容器带 key → class st-key-ps_ctl，便于只给这两个按钮缩小样式
     c1, c2 = box.columns(2)
     running = jobs.is_running()
+    changed = False
     if running and jobs.is_paused():
         if c1.button("继续", key="ps_act_resume", help="继续被暂停的任务", **_WIDE_BTN):
             jobs.resume()
-            st.rerun(scope="fragment")
+            changed = True
     elif running:
         if c1.button("暂停", key="ps_act_pause", help="在下一次模型/检索调用前暂停", **_WIDE_BTN):
             jobs.pause()
-            st.rerun(scope="fragment")
+            changed = True
     else:
         if c1.button("开始", key="ps_act_start", help="从未完成的阶段继续跑研发流水线 ①～⑥", **_WIDE_BTN):
             jobs.start_discovery()
-            st.rerun(scope="fragment")
+            changed = True
     if c2.button("删除", key="ps_act_delete", help="取消当前任务并清空最近事件", **_WIDE_BTN):
         jobs.cancel()
         activity.clear_events()
-        st.rerun(scope="fragment")
+        changed = True
+    if changed:
+        time.sleep(0.3)   # 给后台线程一点时间切换状态，再整页重跑刷新按钮与面板
+        st.rerun()
 
 
 _WIDE_BTN: dict[str, Any] = {"width": "stretch"} if _supports_str_width() else {"use_container_width": True}
@@ -231,8 +236,9 @@ def sidebar_activity() -> None:
 
     @st.fragment(run_every=3 if busy else 10)
     def _panel() -> None:
-        st.markdown(_activity_html(activity.overview()), unsafe_allow_html=True)
+        slot = st.empty()        # 状态占位：先处理按钮点击，再填状态，点完立刻反映
         _activity_controls()
+        slot.markdown(_activity_html(activity.overview()), unsafe_allow_html=True)
 
     with st.sidebar:
         _panel()
