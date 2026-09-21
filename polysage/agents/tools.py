@@ -344,6 +344,26 @@ def find_suppliers(code: str, extra: str = ""):
     return f"寻源完成：{r['n_offers']} 条报价（新增 {r['n_new']}）。\n" + supplier_quotes(code)[0], []
 
 
+@tool("import_trader_quotes", "把贸易商发来的当日报价原文（微信文字）解析入库，并按“每类树脂当日最低到厂价”更新价格卡实价。",
+      {"text": {"type": "string", "description": "报价原文，可多行"}, "trader": {"type": "string", "description": "报价商名称"},
+       "date": {"type": "string", "description": "报价日期 YYYY-MM-DD，默认今天"}}, ["text", "trader"])
+def import_trader_quotes(text: str, trader: str, date: str = ""):
+    from .. import daily_quotes
+
+    res = daily_quotes.import_text(text, trader, date or None, apply=True)
+    head = f"解析 {len(res['rows'])} 条，新增 {res['saved']['new']}、重复 {res['saved']['dup']}、跳过 {res['saved']['skip']}。"
+    if res["applied"]:
+        head += " 价格卡已更新：" + "；".join(f"{a['code']} → {a['landed']:.0f}（{a['producer']} {a['grade']}）" for a in res["applied"])
+    return head + "\n" + daily_quotes.picks_text(res["date"]), []
+
+
+@tool("daily_picks", "查看最近一次贸易商日报里每类树脂（LLDPE/LDPE/HDPE）的最低到厂价与次选。", {})
+def daily_picks():
+    from .. import daily_quotes
+
+    return daily_quotes.picks_text(), []
+
+
 @tool("price_report", "读取最新的价格变动报告与最近价格事件（谁变了、现配方成本、哪些方案排名变化）。", {})
 def price_report():
     from .. import pricing

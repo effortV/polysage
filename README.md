@@ -57,10 +57,11 @@ powercfg /change hibernate-timeout-ac 0
 systemctl status polysage-server polysage-tunnel        # 状态
 journalctl -u polysage-server -n 100 --no-pager          # 服务日志
 systemctl restart polysage-server                        # 改完代码重启
-cd /home/adminisator/data/zzh-new/hn-hdu && sudo -u adminisator git pull && systemctl restart polysage-server   # 更新代码
+sudo bash /home/adminisator/data/zzh-new/hn-hdu/deploy/update.sh    # 更新代码（只覆盖代码文件，不碰 data/knowledge）并重启
 ```
 
-笔记本上的计划任务已移除；本地开发仍可 `.un.ps1`（端口 8511，只连本地库）。
+笔记本上的计划任务已移除；本地开发仍可 `.
+un.ps1`（端口 8511，只连本地库）。
 
 ### 0.2 Streamlit Community Cloud（仅演示）
 
@@ -168,7 +169,14 @@ DeepSeek 的函数调用参数用 `additionalProperties` 明确类型（否则 S
 - 网查参考价与现有估计价偏差 > 40% 时不自动采用，记为待核对（价格卡里 `estimate_candidate`）。
 - 模型验收看 LOOCV 的 RMSE（≤ base 8%；雾度 ≤ 1.0），不看训练集 R²；不达标先补数据。
 
-## 4.5 供应商寻源（数据 → 供应商寻源）
+## 4.4 贸易商日报（数据 → 供应商与报价 → 贸易商日报）
+
+把贸易商每天发来的报价（微信文字直接粘贴，或截图上传、离线 OCR）解析成一行一条：树脂类别 / 厂家 / 牌号 / 仓库地 / 货物状态 / 含税价（H）。
+到厂价 = 含税价 + 运费表（`knowledge/04_价格卡/运费表.yaml`，界面可改；没写仓库地按“默认”）。
+选用规则：LLDPE / LDPE / HDPE 各自牌号视为等价，**每类取当日最低到厂价写进价格卡实价**（LL 与 LLC 同价），推荐方案自动重排；
+页面给每类前 3 名、与上次涨跌、价格趋势。对话里可直接粘贴报价：工具 `import_trader_quotes` / `daily_picks`。
+
+## 4.5 供应商寻源（数据 → 供应商与报价）
 
 给每种原料在网上找厂商 / 贸易商 / 回收厂的报价，与价格卡比较，生成询价清单；询价核实后一键登记为实价（推荐方案联动）。
 

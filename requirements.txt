@@ -16,3 +16,6 @@ beautifulsoup4>=4.12,<5
 lxml>=5,<7
 ddgs>=9,<10
 pytest>=8,<10
+
+# 贸易商日报截图识别（离线 OCR）
+rapidocr-onnxruntime>=1.2

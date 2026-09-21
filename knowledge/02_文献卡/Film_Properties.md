@@ -1,10 +1,10 @@
 # Film Properties
 
 - 类型：literature
-- 来源：Film Properties（crossref，2011）https://doi.org/10.3139/9783446428195.006
+- 来源：Film Properties（crossref，2018）https://doi.org/10.3139/9781569906972.007
 
 ## 出处
-Kirk Cantor, Blown Film Extrusion, 2011, 10.3139/9783446428195.006
+Kirk Cantor, Blown Film Extrusion, 2018, 10.3139/9781569906972.007
 
 ## 研究体系
 资料未提供
@@ -19,4 +19,4 @@ Kirk Cantor, Blown Film Extrusion, 2011, 10.3139/9783446428195.006
 3
 
 ## 与本项目的关系
-该资料为吹膜挤出专著章节，可能涵盖聚乙烯吹塑膜性能的一般性原理，但提供的正文片段未包含具体配方、性能数据或降本策略，无法直接用于本项目LLDPE/再生料配方降本。
+资料未提供

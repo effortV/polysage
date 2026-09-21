@@ -15,10 +15,10 @@ from polysage.pipeline import runner, stage_experiment, state
 
 ui.page_header("实验与模型", "base 现用膜、数据回灌、试验包、DOE、模型与推荐。")
 
-tab_base, tab_data, tab_kit, tab_d, tab_m, tab_r = st.tabs(["base 现用膜", "数据回灌", "方案试验包", "首轮 DOE", "模型", "推荐与复盘"])
+tab_base, tab_data, tab_kit, tab_d, tab_m, tab_r = st.tabs(["base 现用膜", "数据回灌", "方案试验包", "首轮 DOE", "模型", "推荐与复盘"], key="experiments-workspace-tab", on_change="rerun")
 
 # ---------------- base ----------------
-with tab_base:
+def _render_tab_base() -> None:
     st.caption("四个数：拉伸强度、撕裂强度、穿刺力、热封强度（不分 MD/TD）。SD 与条数可后补，录入后自动派生过关线。")
     cur = basedata.load()
     items = cur.get("items", {}) or {}
@@ -42,7 +42,7 @@ with tab_base:
     st.markdown(basedata.to_markdown())
 
 # ---------------- 数据回灌（两条通道）----------------
-with tab_data:
+def _render_tab_data() -> None:
     if not D.TEMPLATE_PATH.exists():
         D.write_template()
     st.download_button("数据表模板", D.TEMPLATE_PATH.read_bytes(), file_name=D.TEMPLATE_PATH.name)
@@ -95,7 +95,7 @@ with tab_data:
             st.caption("base 未录入，无法判过关。")
 
 # ---------------- 方案试验包 ----------------
-with tab_kit:
+def _render_tab_kit() -> None:
     st.caption("按方案生成称料单与预填配方的数据表模板；测完在「数据回灌」上传。")
     forms = [f for f in L.list_formulations() if f["status"] in ("候选", "推荐", "试验中")]
     if forms:
@@ -112,7 +112,7 @@ with tab_kit:
         st.caption("配方库为空，先在「配方推荐」出方案。")
 
 # ---------------- 首轮 DOE ----------------
-with tab_d:
+def _render_tab_d() -> None:
     if stage_experiment.DESIGN_PATH.exists():
         design = pd.read_excel(stage_experiment.DESIGN_PATH, sheet_name="试验配方")
         st.dataframe(design, hide_index=True, height=400, **ui.WIDE)
@@ -124,7 +124,7 @@ with tab_d:
         st.rerun()
 
 # ---------------- 模型 ----------------
-with tab_m:
+def _render_tab_m() -> None:
     rows = M.current_models()
     if rows:
         st.dataframe(pd.DataFrame([{"性能": r["target"], "模型": r["model_type"], "样本": r["n_samples"],
@@ -153,7 +153,7 @@ with tab_m:
             st.write("过关判定：", "✅ 过关" if j["pass"] else "❌ 未过关", j["items"])
 
 # ---------------- 推荐与复盘 ----------------
-with tab_r:
+def _render_tab_r() -> None:
     if stage_experiment.RECO_PATH.exists():
         rec = pd.read_excel(stage_experiment.RECO_PATH, sheet_name="推荐")
         st.dataframe(rec, hide_index=True, **ui.WIDE)
@@ -167,3 +167,17 @@ with tab_r:
     if reviews:
         pick = st.selectbox("复盘纪要", reviews, format_func=lambda p: p.name)
         st.markdown(Path(pick).read_text(encoding="utf-8"))
+
+
+_TAB_RENDERERS = (
+    (tab_base, _render_tab_base),
+    (tab_data, _render_tab_data),
+    (tab_kit, _render_tab_kit),
+    (tab_d, _render_tab_d),
+    (tab_m, _render_tab_m),
+    (tab_r, _render_tab_r),
+)
+for _tab, _renderer in _TAB_RENDERERS:
+    with _tab:
+        if _tab.open:
+            _renderer()

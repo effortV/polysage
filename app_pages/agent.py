@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-import pandas as pd
 import streamlit as st
 
-from polysage import chat_widget, pricing, recommender, ui
+from polysage import chat_widget, pricing, ui
 from polysage.agents import runner
 from polysage.config import settings
 from polysage.formulation import constraints as C
 from polysage.formulation import cost as COST
 from polysage.formulation import library as L
 from polysage.formulation import materials as MAT
-from polysage.formulation import screening as S
 from polysage.pipeline import task
 
 ui.page_header("配方推荐", "输入材料与价格，给出可试验的降本配方；价格变动即时重算。")
-MAT.seed_materials()
-L.seed_top20()
+@st.cache_resource(show_spinner=False)
+def _seed_reference_data() -> None:
+    MAT.seed_materials()
+    L.seed_top20()
+
+
+_seed_reference_data()
 
 t = task.load()
 c = C.load()
@@ -38,9 +38,9 @@ if basedata.is_ready():
 else:
     st.caption("base 未录入：方案只有定性预期，不判过关。到「实验与模型 › base 现用膜」录入，或在对话里直接报四个数。")
 
-tab_chat, tab_in, tab_out, tab_scr, tab_hist = st.tabs(["对话", "表单", "结果", "替代品筛选", "历史"])
+tab_chat, tab_in, tab_out, tab_scr, tab_hist = st.tabs(["对话", "表单", "结果", "替代品筛选", "历史"], key="agent-workspace-tab", on_change="rerun")
 
-with tab_chat:
+def _render_tab_chat() -> None:
     sid = chat_widget.get_or_create_session("advisor", "advisor_session")
     c1, c2 = st.columns([1, 5])
     if c1.button("新对话", key="new_advisor"):
@@ -48,7 +48,13 @@ with tab_chat:
         st.rerun()
     chat_widget.render_session_chat(sid, "报材料与价格、要方案、改价格、追问依据", key="advisor_chat", examples=chat_widget.ADVISOR_EXAMPLES)
 
-with tab_in:
+def _render_tab_in() -> None:
+    import json
+
+    import pandas as pd
+
+    from polysage import recommender
+
     st.markdown("**目标膜**")
     st.text(task.brief(t))
     st.markdown("**可用材料与价格**")
@@ -89,13 +95,19 @@ with tab_in:
         st.session_state["agent_out"] = out
         st.success(f"{len(out['schemes'])} 个方案 · {out['mode']}")
 
-out = st.session_state.get("agent_out")
-if out is None:
-    runs = recommender.last_runs(1)
-    if runs:
-        out = recommender.load_run(runs[0]["id"])
+def _render_tab_out() -> None:
+    from pathlib import Path
 
-with tab_out:
+    import pandas as pd
+
+    from polysage import recommender
+
+    out = st.session_state.get("agent_out")
+    if out is None:
+        runs = recommender.last_runs(1)
+        if runs:
+            out = recommender.load_run(runs[0]["id"])
+
     if not out:
         st.caption("还没有运行记录。")
     else:
@@ -120,7 +132,11 @@ with tab_out:
             if pp.exists():
                 st.download_button(pp.name, pp.read_bytes(), file_name=pp.name, key=f"dl_agent_{pp.name}")
 
-with tab_scr:
+def _render_tab_scr() -> None:
+    import pandas as pd
+
+    from polysage.formulation import screening as S
+
     ref = st.selectbox("基准材料", [m["code"] for m in MAT.list_materials()], index=0, format_func=lambda k: f"{k} {MAT.get_material(k)['name']}")
     tol_d = st.slider("密度窗口 ±", 0.002, 0.02, 0.006, step=0.001, format="%.3f")
     tol_m = st.slider("熔点窗口 ±℃", 2.0, 15.0, 6.0, step=1.0)
@@ -129,7 +145,11 @@ with tab_scr:
                f"窗口 {res['windows']}")
     st.dataframe(pd.DataFrame(S.to_rows(res)), hide_index=True, height=520, **ui.WIDE)
 
-with tab_hist:
+def _render_tab_hist() -> None:
+    import pandas as pd
+
+    from polysage import recommender
+
     runs = recommender.last_runs(20)
     if runs:
         st.dataframe(pd.DataFrame(runs), hide_index=True, **ui.WIDE)
@@ -142,3 +162,16 @@ with tab_hist:
         st.markdown("##### 价格事件")
         st.dataframe(pd.DataFrame([{"时间": e["at"], "触发": e["trigger"], "base成本": round(e["summary"].get("base_cost") or 0),
                                     "明显变化": e["summary"].get("n_flagged")} for e in ev]), hide_index=True, **ui.WIDE)
+
+
+_TAB_RENDERERS = (
+    (tab_chat, _render_tab_chat),
+    (tab_in, _render_tab_in),
+    (tab_out, _render_tab_out),
+    (tab_scr, _render_tab_scr),
+    (tab_hist, _render_tab_hist),
+)
+for _tab, _renderer in _TAB_RENDERERS:
+    with _tab:
+        if _tab.open:
+            _renderer()

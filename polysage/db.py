@@ -280,6 +280,12 @@ def migrate(conn: sqlite3.Connection) -> None:
     if "cost_used" not in fcols:
         # 混合口径成本：有实价用实价、否则估计价（排名与联动都用它）
         conn.execute("ALTER TABLE formulations ADD COLUMN cost_used REAL")
+    # 供应商报价：贸易商日报字段（树脂类别、厂家、仓库地、货物状态、到厂价、渠道）
+    qcols = {r[1] for r in conn.execute("PRAGMA table_info(supplier_quotes)").fetchall()}
+    for name, typ in (("family", "TEXT"), ("producer", "TEXT"), ("warehouse", "TEXT"), ("delivery", "TEXT"),
+                      ("landed_price", "REAL"), ("channel", "TEXT DEFAULT '网查'")):
+        if qcols and name not in qcols:
+            conn.execute(f"ALTER TABLE supplier_quotes ADD COLUMN {name} {typ}")
     conn.commit()
 
 

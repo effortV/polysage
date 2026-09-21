@@ -20,9 +20,9 @@ for col, (label, key) in zip(metric_cols, [("资料", "sources"), ("切片", "ch
                                         ("材料卡", "cards_material"), ("文献卡", "cards_literature"), ("专利卡", "cards_patent")]):
     col.metric(label, stats.get(key, 0))
 
-tab_q, tab_s, tab_u, tab_c, tab_src = st.tabs(["问答", "联网检索入库", "手动上传", "卡片", "资料清单"])
+tab_q, tab_s, tab_u, tab_c, tab_src = st.tabs(["问答", "联网检索入库", "手动上传", "卡片", "资料清单"], key="knowledge-workspace-tab", on_change="rerun")
 
-with tab_q:
+def _render_tab_q() -> None:
     q = st.text_input("问题", placeholder="例如：茂金属 LLDPE 替代 C4 LLDPE 时对膜泡稳定性有什么影响？")
     types = st.pills("限定类型", ["paper", "patent", "tds", "web", "price"], selection_mode="multi")
     if st.button("检索并回答", disabled=not q):
@@ -40,7 +40,7 @@ with tab_q:
                 for c in res["citations"]:
                     st.markdown(f"- **[{c['label']}]** {c['cite']}")
 
-with tab_s:
+def _render_tab_s() -> None:
     q2 = st.text_input("检索式（中英文均可；英文对学术库更有效）", key="q_search")
     provs = st.multiselect("来源", list(PROVIDERS), default=DEFAULT_PROVIDERS, format_func=lambda k: PROVIDERS[k])
     n = st.slider("每源条数", 5, 50, 15)
@@ -65,7 +65,7 @@ with tab_s:
                 prog.progress((i + 1) / len(sel))
             st.success("完成")
 
-with tab_u:
+def _render_tab_u() -> None:
     st.caption("支持 PDF / DOCX / XLSX / CSV / HTML / TXT / MD；CNKI、万方导出 txt 自动拆题录。")
     files = st.file_uploader("上传资料", accept_multiple_files=True)
     c1, c2, c3 = st.columns(3)
@@ -88,7 +88,7 @@ with tab_u:
     if st.button("补建向量", help="配置 SiliconFlow 密钥后运行一次"):
         st.info(f"处理 {embed_missing()} 个切片")
 
-with tab_c:
+def _render_tab_c() -> None:
     ctype = st.segmented_control("类型", ["material", "literature", "patent"], default="material",
                                  format_func={"material": "材料卡", "literature": "文献卡", "patent": "专利卡"}.get)
     cards = kb.list_cards(ctype)
@@ -127,7 +127,7 @@ with tab_c:
                 st.success(f"已生成卡片 #{cid}")
                 st.rerun()
 
-with tab_src:
+def _render_tab_src() -> None:
     rows = db.list_sources(1000)
     if rows:
         df = pd.DataFrame(rows)[["id", "source_type", "provider", "title", "authors", "year", "venue", "doi", "url", "credibility", "n_chunks", "retrieved_at"]]
@@ -138,3 +138,16 @@ with tab_src:
             st.rerun()
     else:
         st.caption("知识库为空。")
+
+
+_TAB_RENDERERS = (
+    (tab_q, _render_tab_q),
+    (tab_s, _render_tab_s),
+    (tab_u, _render_tab_u),
+    (tab_c, _render_tab_c),
+    (tab_src, _render_tab_src),
+)
+for _tab, _renderer in _TAB_RENDERERS:
+    with _tab:
+        if _tab.open:
+            _renderer()

@@ -225,6 +225,14 @@ def _activity_controls() -> None:
 _WIDE_BTN: dict[str, Any] = {"width": "stretch"} if _supports_str_width() else {"use_container_width": True}
 
 
+@st.cache_data(ttl=2, max_entries=1, show_spinner=False)
+def _cached_activity_overview() -> dict[str, Any]:
+    """Short-lived cache for sidebar status reads shared by all sessions."""
+    from . import activity
+
+    return activity.overview()
+
+
 def sidebar_activity() -> None:
     """侧栏底部「后台运行」面板：整个服务进程的任务、模型调用、检索与最近事件。
 
@@ -238,7 +246,7 @@ def sidebar_activity() -> None:
     def _panel() -> None:
         slot = st.empty()        # 状态占位：先处理按钮点击，再填状态，点完立刻反映
         _activity_controls()
-        slot.markdown(_activity_html(activity.overview()), unsafe_allow_html=True)
+        slot.markdown(_activity_html(_cached_activity_overview()), unsafe_allow_html=True)
 
     with st.sidebar:
         _panel()

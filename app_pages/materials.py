@@ -17,9 +17,9 @@ ui.page_header("原料与价格", "原料库、价格卡与联动、配方库、
 MAT.seed_materials()
 L.seed_top20()
 
-tab_m, tab_p, tab_f, tab_g, tab_c = st.tabs(["原料库", "价格卡与回填", "配方库", "生成与评估", "约束"])
+tab_m, tab_p, tab_f, tab_g, tab_c = st.tabs(["原料库", "价格卡与回填", "配方库", "生成与评估", "约束"], key="materials-workspace-tab", on_change="rerun")
 
-with tab_m:
+def _render_tab_m() -> None:
     mats = MAT.list_materials(active_only=False)
     st.caption("物性以供应商 TDS 为准；种子熔点为通用典型值，请按 TDS 校正。")
     df = pd.DataFrame([{"代码": m["code"], "类别": m["category"], "材料": m["name"], "牌号": m["grade"], "生产商": m.get("producer"), "供应商": m["supplier"],
@@ -62,7 +62,7 @@ with tab_m:
                 st.success("已登记")
                 st.rerun()
 
-with tab_p:
+def _render_tab_p() -> None:
     mats = MAT.list_materials(active_only=False)
     pdf = pd.DataFrame([{"代码": m["code"], "材料": m["name"], "估计价": m["price_estimate"], "实价": m["price_actual"], "采用": m["price_tier"]} for m in mats])
     st.dataframe(pdf, hide_index=True, **ui.WIDE)
@@ -130,7 +130,7 @@ with tab_p:
             st.success(f"已撤销；现配方成本 {res['base_cost']:.0f}，{res['n_flagged']} 个配方明显变化")
             st.rerun()
 
-with tab_f:
+def _render_tab_f() -> None:
     forms = L.list_formulations()
     base_cost = COST.compute_simple(C.base_formulation())
     fdf = pd.DataFrame([{"编号": f["code"], "结构": f["structure"], "配方": f["formula"],
@@ -151,7 +151,7 @@ with tab_f:
     if top_path.exists():
         st.download_button("下载 Top 20 表", top_path.read_bytes(), file_name=top_path.name)
 
-with tab_g:
+def _render_tab_g() -> None:
     st.caption("在约束内生成候选并核算成本；可选四项性能定性评估与排序。")
     c1, c3 = st.columns(2)
     n = c1.slider("生成数量", 5, 60, 20)
@@ -190,7 +190,7 @@ with tab_g:
             except Exception as e:  # noqa: BLE001
                 st.error(f"格式错误：{e}")
 
-with tab_c:
+def _render_tab_c() -> None:
     import altair as alt
 
     from polysage.pipeline import task as TASK
@@ -297,3 +297,16 @@ with tab_c:
             C.save(yaml.safe_load(txt))
             st.success("已保存")
             st.rerun()
+
+
+_TAB_RENDERERS = (
+    (tab_m, _render_tab_m),
+    (tab_p, _render_tab_p),
+    (tab_f, _render_tab_f),
+    (tab_g, _render_tab_g),
+    (tab_c, _render_tab_c),
+)
+for _tab, _renderer in _TAB_RENDERERS:
+    with _tab:
+        if _tab.open:
+            _renderer()

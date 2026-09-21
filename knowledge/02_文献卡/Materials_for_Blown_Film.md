@@ -1,10 +1,10 @@
 # Materials for Blown Film
 
 - 类型：literature
-- 来源：Materials for Blown Film（crossref，2011）https://doi.org/10.3139/9783446428195.001
+- 来源：Materials for Blown Film（crossref，2018）https://doi.org/10.3139/9781569906972.001
 
 ## 出处
-Kirk Cantor, Blown Film Extrusion, 2011, 10.3139/9783446428195.001
+Kirk Cantor, Blown Film Extrusion, 2018, 10.3139/9781569906972.001
 
 ## 研究体系
 资料未提供
@@ -19,4 +19,4 @@ Kirk Cantor, Blown Film Extrusion, 2011, 10.3139/9783446428195.001
 3
 
 ## 与本项目的关系
-资料仅提供了章节标题，未包含具体的材料配方、性能数据或降本策略，因此无法从中提取与本项目聚乙烯吹塑包装膜降本直接相关的可借鉴内容。
+该资料为吹膜材料章节，可能涵盖聚乙烯等常用材料的性能与选择原则，但提供的正文片段未包含具体配方、性能数据或降本策略，无法直接提取与本项目LLDPE/再生料配方降本相关的定量结论。

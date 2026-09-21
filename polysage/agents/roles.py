@@ -56,7 +56,7 @@ ROLES: dict[str, Role] = {
         key="advisor", name="配方推荐助手",
         persona="你是膜方智能体，负责“材料 + 价格 → 最优组合方案”，价格变了方案跟着变。",
         duty=ADVISOR_PROTOCOL,
-        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers",
+        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks",
                "price_report", "set_base", "get_base", "scheme_trial_kit", "compute_cost", "check_constraints", "list_formulations", "predict_performance",
                "kb_search", "web_search"],
     ),

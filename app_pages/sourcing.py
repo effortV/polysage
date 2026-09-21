@@ -3,7 +3,9 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from polysage import activity, db, jobs, sourcing, ui
+from datetime import date
+
+from polysage import activity, daily_quotes, db, jobs, sourcing, ui
 from polysage.formulation import materials as MAT
 
 ui.page_header("供应商寻源", "为每种原料找厂商与报价，和价格卡比较，生成询价清单；询价核实后一键登记为实价。")
@@ -11,15 +13,106 @@ MAT.seed_materials()
 
 mats = MAT.list_materials(active_only=True)
 names = {m["code"]: m["name"] for m in mats}
-tab_run, tab_res, tab_rfq, tab_sup = st.tabs(["寻源", "结果", "询价清单", "厂商库"])
+tab_daily, tab_run, tab_res, tab_rfq, tab_sup = st.tabs(["贸易商日报", "寻源", "结果", "询价清单", "厂商库"], key="sourcing-workspace-tab", on_change="rerun")
 
 
 def _fmt_price(v):
     return "-" if v is None or pd.isna(v) else f"{v:,.0f}"
 
 
+# ---------------- 贸易商日报 ----------------
+def _render_tab_daily() -> None:
+    st.caption("把微信里的报价文字粘进来，或上传截图；解析后按“每类树脂当日最低到厂价”更新价格卡（到厂价 = 含税价 + 运费表）。")
+    c1, c2 = st.columns([2, 1])
+    trader = c1.text_input("报价商", value=st.session_state.get("dq_trader", ""), placeholder="例如：XX塑化 张经理")
+    qdate = c2.date_input("报价日期", value=date.today())
+    text = st.text_area("报价文字（微信原文直接粘贴）", height=180, placeholder="线性：\n浙石化7042，本周计划，9650H；\n宝来7042，本周计划，9580H；\n高压：\n浙石化2426H，下周计划，12000H；")
+    imgs = st.file_uploader("或上传报价截图（可多张）", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
+    b1, b2 = st.columns([1, 3])
+    if b1.button("解析", type="primary", disabled=not trader.strip() or (not text.strip() and not imgs)):
+        st.session_state["dq_trader"] = trader.strip()
+        full = text
+        for f in imgs or []:
+            try:
+                ocr = daily_quotes.ocr_image(f.getvalue())
+                full += "\n" + ocr
+            except Exception as e:  # noqa: BLE001
+                st.error(f"截图 {f.name} 识别失败：{e}")
+        with st.spinner("解析中…"):
+            try:
+                rows = daily_quotes.parse_text(full, trader.strip(), qdate.isoformat())
+            except Exception as e:  # noqa: BLE001
+                st.error(f"解析失败：{e}")
+                rows = []
+        st.session_state["dq_rows"] = rows
+        if not rows:
+            st.warning("没有解析出报价，检查原文或截图。")
+    rows = st.session_state.get("dq_rows") or []
+    if rows:
+        st.markdown(f"解析出 **{len(rows)}** 条，可以直接改再入库：")
+        df = pd.DataFrame([{"类别": r["family"], "厂家": r["producer"], "牌号": r["grade"], "仓库地": r["warehouse"], "货物状态": r["delivery"],
+                            "含税价": r["price"], "含税": r["tax_included"], "运费": r["freight"], "到厂价": r["landed"], "备注": r["note"]} for r in rows])
+        edited = st.data_editor(df, hide_index=True, key="dq_editor", num_rows="dynamic",
+                                column_config={"类别": st.column_config.SelectboxColumn(options=daily_quotes.FAMILIES),
+                                               "含税价": st.column_config.NumberColumn(format="%.0f"), "运费": st.column_config.NumberColumn(format="%.0f"),
+                                               "到厂价": st.column_config.NumberColumn(format="%.0f", disabled=True)}, **ui.WIDE)
+        auto = st.checkbox("入库后按每类最低到厂价更新价格卡（实价）", value=True)
+        if st.button("入库", type="primary", key="dq_save"):
+            final = []
+            for _, r in edited.iterrows():
+                if not r["含税价"] or pd.isna(r["含税价"]):
+                    continue
+                price = float(r["含税价"]); fr = float(r["运费"]) if not pd.isna(r["运费"]) else daily_quotes.freight_for(str(r["仓库地"] or ""))
+                final.append({"family": r["类别"], "producer": str(r["厂家"] or ""), "grade": str(r["牌号"] or ""), "warehouse": str(r["仓库地"] or ""),
+                              "delivery": str(r["货物状态"] or ""), "price": price, "tax_included": bool(r["含税"]), "note": str(r["备注"] or ""),
+                              "freight": fr, "landed": price + fr, "trader": trader.strip() or st.session_state.get("dq_trader", "贸易商"),
+                              "date": qdate.isoformat()})
+            saved = daily_quotes.save_rows(final)
+            applied = daily_quotes.apply_cheapest(qdate.isoformat()) if auto else []
+            st.session_state["dq_rows"] = []
+            msg = f"已入库：新增 {saved['new']}，重复 {saved['dup']}，跳过 {saved['skip']}（“其他”类不进价格卡）。"
+            if applied:
+                msg += " 价格卡已更新：" + "；".join(f"{a['code']} → {a['landed']:.0f}（{a['producer']} {a['grade']} @ {a['warehouse']}）" for a in applied)
+            st.success(msg)
+            st.rerun()
+
+    ps = daily_quotes.picks()
+    if ps:
+        st.subheader(f"今日建议（{next(iter(ps.values()))['date']}，每类最低到厂价）")
+        cols = st.columns(len(ps))
+        for col, (fam, p) in zip(cols, ps.items()):
+            b = p["best"]
+            delta = None if p["change"] is None else f"{p['change']:+.0f} vs 上次"
+            col.metric(daily_quotes.FAMILY_LABEL[fam], f"{b['landed_price']:,.0f}", delta=delta, delta_color="inverse",
+                       help=f"{b['grade']} @ {b['warehouse'] or '未注明'}（{b['delivery']}）含税 {b['price']:.0f}，{b['trader']}")
+        table = []
+        for fam, p in ps.items():
+            for i, r in enumerate(p["top"], 1):
+                table.append({"类别": daily_quotes.FAMILY_LABEL[fam], "名次": i, "牌号": r["grade"], "仓库地": r["warehouse"],
+                              "货物状态": r["delivery"], "含税价": r["price"], "到厂价": r["landed_price"], "报价商": r["trader"],
+                              "价格卡现价": p.get("current_card")})
+        st.dataframe(pd.DataFrame(table), hide_index=True, **ui.WIDE)
+        if st.button("按最低价更新价格卡", key="dq_apply"):
+            applied = daily_quotes.apply_cheapest()
+            st.success("已更新：" + "；".join(f"{a['code']} → {a['landed']:.0f}" for a in applied) if applied else "价格卡已是当日最低价，无需更新。")
+        fams = [f for f in ps if daily_quotes.history(f)]
+        if fams:
+            with ui.expander("价格趋势（每日最低到厂价）"):
+                hist = {}
+                for f in fams:
+                    for h in daily_quotes.history(f):
+                        hist.setdefault(h["d"], {})[daily_quotes.FAMILY_LABEL[f]] = h["landed"]
+                st.line_chart(pd.DataFrame.from_dict(hist, orient="index").sort_index())
+    with ui.expander("运费表（仓库地 → 到厂，元/吨；按子串匹配，改完保存）"):
+        fdf = pd.DataFrame([{"仓库地": k, "运费": v} for k, v in daily_quotes.load_freight().items()])
+        fedit = st.data_editor(fdf, hide_index=True, num_rows="dynamic", key="freight_editor", **ui.WIDE)
+        if st.button("保存运费表"):
+            daily_quotes.save_freight({str(r["仓库地"]): float(r["运费"]) for _, r in fedit.iterrows() if str(r["仓库地"]).strip() and not pd.isna(r["运费"])})
+            st.success("已保存；下次解析按新运费算到厂价。")
+
+
 # ---------------- 寻源 ----------------
-with tab_run:
+def _render_tab_run() -> None:
     st.caption("网查到的是挂牌价 / 平台标价，口径常不一致；用来确定该向谁询价和大致区间，实价以询价为准。")
     default_codes = [m["code"] for m in mats if m.get("use_flag") != "默认不用"][:8]
     c1, c2 = st.columns([3, 1])
@@ -49,7 +142,7 @@ with tab_run:
         st.caption(f"上次寻源：{lr['at'][:16].replace('T', ' ')} · {', '.join(lr['codes'])}")
 
 # ---------------- 结果 ----------------
-with tab_res:
+def _render_tab_res() -> None:
     all_quotes = sourcing.quotes(include_untrusted=True)
     if not all_quotes:
         st.info("还没有报价。到「寻源」运行一次，或在「厂商库」手动录入。")
@@ -95,7 +188,7 @@ with tab_res:
                 st.markdown(sourcing.REPORT_PATH.read_text(encoding="utf-8"))
 
 # ---------------- 询价清单 ----------------
-with tab_rfq:
+def _render_tab_rfq() -> None:
     rfq = sourcing.rfq_rows()
     if not rfq:
         st.info("询价清单为空：在「结果」里勾选“加入询价”。")
@@ -128,7 +221,7 @@ with tab_rfq:
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ---------------- 厂商库 ----------------
-with tab_sup:
+def _render_tab_sup() -> None:
     sups = sourcing.list_suppliers()
     st.caption("寻源累积的厂商档案；也可以把现有供应商录进来，便于对比。")
     with ui.expander("手动录入厂商 / 报价"):
@@ -174,3 +267,16 @@ with tab_sup:
                                         "来源": q["source_url"]} for q in qs]), hide_index=True, **ui.WIDE)
     else:
         st.info("厂商库为空。")
+
+
+_TAB_RENDERERS = (
+    (tab_daily, _render_tab_daily),
+    (tab_run, _render_tab_run),
+    (tab_res, _render_tab_res),
+    (tab_rfq, _render_tab_rfq),
+    (tab_sup, _render_tab_sup),
+)
+for _tab, _renderer in _TAB_RENDERERS:
+    with _tab:
+        if _tab.open:
+            _renderer()
