@@ -1,6 +1,8 @@
 """核心层单元测试：成本/约束/生成器、入库与检索、工具、ML。"""
 from __future__ import annotations
 
+from conftest import seed_library
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,7 +18,7 @@ from polysage.formulation import materials as MAT
 @pytest.fixture(autouse=True)
 def _seed():
     MAT.seed_materials()
-    L.seed_top20()
+    seed_library()
 
 
 def _doc_mats():

@@ -215,13 +215,15 @@ def recommend_schemes(materials: list[dict] | None = None, only_listed_materials
     from .. import recommender
 
     out = recommender.recommend({"materials": materials or [], "only_listed_materials": only_listed_materials, "n_schemes": n_schemes,
-                                 "use_llm": use_llm, "save_to_library": True})
+                                 "use_llm": use_llm, "save_to_library": True, "origin": "对话推荐"})
     lines = [f"模式：{out['mode']}；现配方成本 {out['base_cost']:.0f}，上限 {out['cost_limit']}"] + [f"· {n}" for n in out["notes"]]
     for s in out["schemes"]:
         ml = s.get("ml") or {}
         lines.append(f"{s['rank']}. [{s['theme']}] {s['formula']} | 成本 {s['cost']}（{s['cost_tier']}）| 降本 {s['savings_pct']:.1f}% | "
                      f"四项 {s.get('effects_short') or '-'} | 把握 {s.get('pass_confidence') or '-'}" + (f" | P(过关) {ml['p_pass']:.2f}" if ml.get('p_pass') is not None else ""))
     lines.append("产出：" + "; ".join(out["outputs"]))
+    if out.get("library_codes"):
+        lines.append("已存入配方库（来源：对话推荐）：" + ", ".join(out["library_codes"]))
     return "\n".join(lines), []
 
 
@@ -465,13 +467,20 @@ def generate_candidates(n: int = 20, themes: list[str] | None = None, fixed: dic
       "risks": {"type": "string"}, "priority": {"type": "string"}, "status": {"type": "string"}}, ["components"])
 def save_formulation(components: dict, code: str = "", structure: str = "mono", effects_short: str = "",
                      rationale: str = "", risks: str = "", priority: str = "", status: str = "候选"):
-    from ..formulation.library import next_code, save_formulation as _sf
+    from .. import db as _db
+    from ..formulation.library import find_by_components, next_code, save_formulation as _sf
 
+    comps = {k: float(v) for k, v in components.items() if float(v)}
+    total = sum(comps.values())
+    if abs(total - 100) > 0.5:
+        return f"组分合计 {total:.1f}%，必须为 100%，请修正后再存。", []
+    dup = find_by_components(comps)
+    if dup and not code:
+        return f"配方库里已有相同组分的配方 {dup['code']}（来源：{dup.get('origin') or '-'}），不重复入库。", []
     code = code or next_code("G")
-    fid = _sf(code, {k: float(v) for k, v in components.items()}, structure=structure,
-              predicted={"effects_short": effects_short}, rationale=rationale, risks=risks, priority=priority, status=status,
-              origin="对话生成")
-    return f"已保存配方 {code}（id={fid}）", []
+    fid = _sf(code, comps, structure=structure, predicted={"effects_short": effects_short}, rationale=rationale, risks=risks,
+              priority=priority, status=status, origin=f"对话手工 {_db.now()[:10]}")
+    return f"已保存配方 {code}（id={fid}，来源：对话手工）", []
 
 
 @tool("list_formulations", "列出配方库中的配方（编号、配方、成本、状态、四项预期）。", {"status": {"type": "string"}})

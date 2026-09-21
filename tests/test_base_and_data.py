@@ -1,6 +1,8 @@
 """base 录入与过关线、双通道数据回灌、试验包、价格撤销、模型切换。"""
 from __future__ import annotations
 
+from conftest import seed_library
+
 import pandas as pd
 import pytest
 
@@ -14,7 +16,7 @@ from polysage.ml import dataset as D
 @pytest.fixture(autouse=True)
 def _seed():
     MAT.seed_materials()
-    L.seed_top20()
+    seed_library()
 
 
 def test_base_entry_thresholds_and_judge():

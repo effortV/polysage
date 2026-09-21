@@ -15,7 +15,7 @@ from . import state, task
 
 def candidate_pool(structure: str, n_generated: int = 40, seed: int = 42) -> list[Candidate]:
     cands = generate(n_out=n_generated, structure=structure, seed=seed)
-    # 配方库里的候选（含内部 V2.0 首版 Top 20）一并评估
+    # 配方库里已有的候选（流水线、对话、手工录入）一并评估
     for f in L.list_formulations():
         if f["status"] not in ("候选", "推荐"):
             continue

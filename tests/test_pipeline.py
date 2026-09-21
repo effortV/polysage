@@ -1,6 +1,8 @@
 """流水线离线端到端：①～⑥ 发现阶段 + ⑦～⑨ 实验闭环（假 LLM + 假检索源）。"""
 from __future__ import annotations
 
+from conftest import seed_library
+
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +40,7 @@ def test_experiment_loop(fake_llm, fake_sources):
     from polysage.ml import dataset as D
 
     MAT.seed_materials()
-    L.seed_top20()
+    seed_library()
     design = stage_experiment.doe_round1(priority=[f["comps"] for f in L.SEED_TOP20[:6]])
     df_design = pd.read_excel(design, sheet_name="试验配方")
     rng = np.random.default_rng(1)

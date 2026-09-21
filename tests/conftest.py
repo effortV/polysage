@@ -146,3 +146,17 @@ def fake_sources(monkeypatch):
 @pytest.fixture(scope="session")
 def home() -> Path:
     return _TMP
+
+
+def seed_library() -> int:
+    """测试用：把早期首版 Top 20 当作示例配方写进临时库（正式库已不再自动写入这批种子）。"""
+    from polysage.formulation import library as L
+
+    n = 0
+    for f in L.SEED_TOP20:
+        if L.db.q1("SELECT id FROM formulations WHERE code=?", (f["code"],)):
+            continue
+        L.save_formulation(f["code"], f["comps"], structure=f["structure"], predicted={"effects_short": f["effects"]},
+                           rationale=f["rationale"], risks=f["risks"], priority=f["priority"], status="候选", origin="测试示例")
+        n += 1
+    return n

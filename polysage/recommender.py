@@ -43,6 +43,7 @@ class RecommendInput:
     use_llm: bool = True
     use_ml: bool = True
     save_to_library: bool = True
+    origin: str = "配方推荐页"   # 进配方库时的来源标签：对话推荐 / 配方推荐页
     seed: int = 42
 
     @classmethod
@@ -234,6 +235,7 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
         experiments = pick_first_round(top_for_pick, task.brief())
 
     # 6) 入库与导出
+    out_at = db.now()
     codes = []
     if inp.save_to_library:
         for r in ranked:
@@ -242,7 +244,8 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
                                predicted={"effects_short": r.get("effects_short"), "effects": r.get("effects"), "pass_confidence": r.get("pass_confidence"),
                                           "expected": r.get("expected"), "ml": r.get("ml")},
                                rationale=f"[{r['theme']}] {r.get('expected', '')}｜依据：{r.get('evidence', '')}",
-                               risks=f"{r.get('risk_level', '')}：{r.get('risks', '')}", priority=str(r["rank"]), status="候选", origin="智能体")
+                               risks=f"{r.get('risk_level', '')}：{r.get('risks', '')}", priority=str(r["rank"]), status="候选",
+                               origin=f"{inp.origin} {out_at[:10]}")
             codes.append(code)
     from . import basedata
 
@@ -266,11 +269,8 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
 
 
 def _existing_code(components: dict[str, float]) -> str | None:
-    key = db.dumps(dict(sorted(components.items())))
-    for f in L.list_formulations():
-        if db.dumps(dict(sorted(f["components"].items()))) == key:
-            return f["code"]
-    return None
+    f = L.find_by_components(components)
+    return f["code"] if f else None
 
 
 def export(out: dict[str, Any], stem: str | None = None) -> list[Path]:

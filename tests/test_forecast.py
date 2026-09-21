@@ -1,6 +1,8 @@
 """价格预判：期货信号、模型+期货混合、入库、对方案成本的影响（不联网，假数据）。"""
 from __future__ import annotations
 
+from conftest import seed_library
+
 from datetime import date
 
 from polysage import db, forecast as F, llm
@@ -33,7 +35,7 @@ def test_futures_signal_and_blend(monkeypatch, home):
     assert scen["LL"] == scen["LLC"] == rec["price_1m"]
     from polysage.formulation import library as L
 
-    L.seed_top20()
+    seed_library()
     rows = F.scheme_impact(top_n=5)
     assert rows and all(r["cost_future"] >= r["cost_now"] for r in rows if "LL" in r["components"])   # 线性涨 → 含 LL 的方案成本升
 

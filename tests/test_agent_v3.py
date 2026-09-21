@@ -1,6 +1,8 @@
 """V3：替代品窗口筛选、价格联动重排、推荐智能体、再生料批次。"""
 from __future__ import annotations
 
+from conftest import seed_library
+
 from pathlib import Path
 
 import pandas as pd
@@ -18,7 +20,7 @@ from polysage.formulation import screening as S
 @pytest.fixture(autouse=True)
 def _seed():
     MAT.seed_materials()
-    L.seed_top20()
+    seed_library()
 
 
 def test_price_basis_and_auto_cost_limit():

@@ -111,16 +111,33 @@ def recompute_costs() -> int:
     return n
 
 
+SEED_ORIGIN = "内部技术路线 V2.0 表 4-3 首版"
+
+
 def seed_top20() -> int:
-    n = 0
-    for f in SEED_TOP20:
-        if db.q1("SELECT id FROM formulations WHERE code=?", (f["code"],)):
-            continue
-        save_formulation(f["code"], f["comps"], structure=f["structure"],
-                         predicted={"effects_short": f["effects"]}, rationale=f["rationale"], risks=f["risks"],
-                         priority=f["priority"], status="候选", origin="内部技术路线 V2.0 表 4-3 首版")
-        n += 1
-    return n
+    """（已停用种子）配方库只收研发流水线、对话/表单推荐和手工录入的配方；这里顺手把早期写入的首版种子清掉。返回清掉的条数。"""
+    return purge_seed_top20()
+
+
+def purge_seed_top20() -> int:
+    rows = db.q("SELECT id FROM formulations WHERE origin=?", (SEED_ORIGIN,))
+    for r in rows:
+        db.delete("formulations", r["id"])
+    if rows:
+        export_library()
+    return len(rows)
+
+
+def find_by_components(components: dict[str, float]) -> dict[str, Any] | None:
+    """按组分（忽略顺序）找已有配方，避免同一配方多个编号。"""
+    key = db.dumps({k: float(v) for k, v in sorted(components.items()) if v})
+    for f in list_formulations():
+        if db.dumps({k: float(v) for k, v in sorted(f["components"].items()) if v}) == key:
+            return f
+    return None
+
+
+ORIGIN_LABELS = {"pipeline": "研发流水线 ④", "chat": "对话推荐", "form": "配方推荐页", "manual": "手工录入", "experiment": "实验回灌"}
 
 
 def export_library(path: Path | None = None) -> Path:

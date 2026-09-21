@@ -133,6 +133,35 @@ def _render_tab_p() -> None:
 def _render_tab_f() -> None:
     forms = L.list_formulations()
     base_cost = COST.compute_simple(C.base_formulation())
+    st.caption("配方来源：研发流水线 ④ / ⑧、配方推荐页与对话推荐（自动入库）、这里手工录入。相同组分不会重复入库。")
+    with ui.expander("手工录入配方"):
+        with st.form("add_formulation"):
+            comps_txt = st.text_input("组分（代码 百分比，用 / 分隔，合计 100）", placeholder="LL 50 / R1 45 / AD 5")
+            r1, r2 = st.columns(2)
+            rationale = r1.text_input("思路 / 理由")
+            risks = r2.text_input("风险 / 观察点")
+            if st.form_submit_button("存入配方库"):
+                comps: dict[str, float] = {}
+                try:
+                    for part in comps_txt.replace("，", "/").replace(",", "/").split("/"):
+                        k, v = part.split()
+                        comps[k.strip().upper()] = float(v)
+                except ValueError:
+                    st.error("格式不对，例如：LL 50 / R1 45 / AD 5")
+                    comps = {}
+                if comps:
+                    unknown = [k for k in comps if not MAT.get_material(k)]
+                    if unknown:
+                        st.error(f"原料库没有代码：{', '.join(unknown)}（先到「原料库」登记）")
+                    elif abs(sum(comps.values()) - 100) > 0.5:
+                        st.error(f"合计 {sum(comps.values()):.1f}%，必须为 100%")
+                    elif (dup := L.find_by_components(comps)):
+                        st.warning(f"已有相同组分的配方 {dup['code']}（来源：{dup.get('origin') or '-'}）")
+                    else:
+                        code = L.next_code("G")
+                        L.save_formulation(code, comps, rationale=rationale, risks=risks, status="候选", origin=f"手工录入 {db.now()[:10]}")
+                        st.success(f"已存入 {code}")
+                        st.rerun()
     fdf = pd.DataFrame([{"编号": f["code"], "结构": f["structure"], "配方": f["formula"],
                          "当前成本": round(f["cost_used"]) if f.get("cost_used") else None, "口径": f.get("cost_tier"),
                          "估计价成本": round(f["cost_estimate"]) if f["cost_estimate"] else None,
