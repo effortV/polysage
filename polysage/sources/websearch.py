@@ -54,7 +54,7 @@ DEFAULT_CHAIN = (("bing", None, 25), ("bing", "wt-wt", 25), ("duckduckgo", "wt-w
 BING_FIRST_CHAIN = DEFAULT_CHAIN
 
 
-def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN) -> list[SearchHit]:
+def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN, timelimit: str | None = None) -> list[SearchHit]:
     from ddgs import DDGS
 
     # ddgs 9.x 默认 backend="auto" 会轮询 grokipedia 等国内连不上的引擎（每次超时 30 s）。
@@ -65,7 +65,7 @@ def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN) -> list[Searc
         for backend, reg, timeout in chain:
             try:
                 with DDGS(timeout=timeout, proxy=net.proxy_for(_ENGINE_URL.get(backend))) as d:
-                    rows = d.text(query, max_results=min(limit, 30), region=reg or region, backend=backend)
+                    rows = d.text(query, max_results=min(limit, 30), region=reg or region, backend=backend, timelimit=timelimit)
             except Exception as e:  # noqa: BLE001
                 last = e
                 continue
@@ -85,18 +85,19 @@ def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN) -> list[Searc
     return hits
 
 
-def search(query: str, limit: int = 10, region: str = "cn-zh", *, bing_first: bool = False) -> list[SearchHit]:
+def search(query: str, limit: int = 10, region: str = "cn-zh", *, bing_first: bool = False, timelimit: str | None = None) -> list[SearchHit]:
+    """timelimit: d/w/m/y 只要最近一天/周/月/年的结果（引擎支持时生效）。"""
     with activity.track("search", "web"):
-        return _search(query, limit, region, bing_first)
+        return _search(query, limit, region, bing_first, timelimit)
 
 
-def _search(query: str, limit: int, region: str, bing_first: bool = False) -> list[SearchHit]:
+def _search(query: str, limit: int, region: str, bing_first: bool = False, timelimit: str | None = None) -> list[SearchHit]:
     if settings.tavily_api_key:
         try:
             return _tavily(query, limit)
         except Exception:  # noqa: BLE001
             pass
     try:
-        return _ddg(query, limit, region, BING_FIRST_CHAIN if bing_first else DEFAULT_CHAIN)
+        return _ddg(query, limit, region, BING_FIRST_CHAIN if bing_first else DEFAULT_CHAIN, timelimit)
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"网页搜索失败（DuckDuckGo）：{e}")

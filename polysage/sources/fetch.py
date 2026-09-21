@@ -34,8 +34,9 @@ def fetch_url(url: str) -> dict:
         text = trafilatura.extract(html, include_tables=True, include_comments=False, favor_recall=True) or ""
         md = trafilatura.extract_metadata(html)
         title = (md.title if md else "") or ""
+        page_date = (md.date if md else "") or ""
     except Exception:  # noqa: BLE001
-        text, title = "", ""
+        text, title, page_date = "", "", ""
     if not text:
         from bs4 import BeautifulSoup
 
@@ -44,4 +45,4 @@ def fetch_url(url: str) -> dict:
             t.decompose()
         text = re.sub(r"\n{3,}", "\n\n", soup.get_text("\n"))
         title = title or (soup.title.string.strip() if soup.title and soup.title.string else "")
-    return {"kind": "html", "text": text.strip(), "file_path": "", "title": title}
+    return {"kind": "html", "text": text.strip(), "file_path": "", "title": title, "date": page_date}

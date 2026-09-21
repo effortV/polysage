@@ -50,3 +50,50 @@ def test_parse_save_and_apply(monkeypatch, home):
     assert "华泰 7042" in D.picks_text("2026-09-21") and D.history("LLDPE")[-1]["landed"] == 9620
     for code in ("LL", "LLC", "LD", "HD"):
         pricing.undo_last_price(code, "actual")
+
+
+def test_web_market_quotes_keeps_only_fresh_pages(monkeypatch, home):
+    from datetime import date, timedelta
+
+    from polysage.sources.base import SearchHit
+    import polysage.sources.fetch as F
+    import polysage.sources.websearch as W
+
+    MAT.seed_materials()
+    today = date.today()
+    fresh = (today - timedelta(days=3)).isoformat()
+    stale = (today - timedelta(days=40)).isoformat()
+    pages = {
+        "https://a.com/fresh": {"text": "浙石化7042 华东 厂提 9380 " * 30, "title": "PE日评", "date": fresh},
+        "https://b.com/stale": {"text": "浙石化7042 华东 现货 7400 " * 30, "title": "旧文", "date": stale},
+        "https://c.com/nodate": {"text": "宝来7042 杭州 现货 9500 " * 30, "title": "无日期", "date": ""},
+    }
+    monkeypatch.setattr(W, "search", lambda q, limit=8, **kw: [SearchHit(provider="bing", external_id=u, title=p["title"], source_type="web", url=u) for u, p in pages.items()])
+    monkeypatch.setattr(F, "fetch_url", lambda url: dict(pages[url], kind="html", file_path=""))
+    seen_urls = []
+
+    def fake_json(messages, **kw):
+        text = messages[-1]["content"]
+        url = text.split("网页：", 1)[1].split("\n", 1)[0].strip()
+        seen_urls.append(url)
+        if "nodate" in url:
+            return {"quotes": [{"family": "LLDPE", "producer": "宝来", "grade": "7042", "warehouse": "杭州", "delivery": "现货", "price": 9500, "tax_included": True, "seller": "某塑化", "date": ""}]}
+        return {"quotes": [{"family": "LLDPE", "producer": "浙石化", "grade": "7042", "warehouse": "华东", "delivery": "厂提", "price": 9380, "tax_included": True, "seller": "生意社华东", "date": ""},
+                           {"family": "HDPE", "producer": "镇海", "grade": "6098", "warehouse": "华东", "delivery": "现货", "price": 9600, "tax_included": True, "seller": "生意社华东", "date": ""}]}
+    monkeypatch.setattr(llm, "chat_json", fake_json)
+
+    s = D.web_market_quotes(["LLDPE"], depth="快", pages_per_query=3)["LLDPE"]
+    assert s["pages"] == 2 and "https://b.com/stale" not in seen_urls          # 两周前的页面整页跳过
+    assert s["rows"] == 1 and s["new"] == 1                                       # 无日期页面的报价丢弃；HDPE 行不算 LLDPE
+    rows = D.web_rows("LLDPE")
+    assert len(rows) == 1 and rows[0]["quote_date"] == fresh and rows[0]["channel"] == "网查" and rows[0]["trader"].startswith("生意社华东")
+    assert rows[0]["landed_price"] == 9380 + D.freight_for("华东")
+    assert all(a["trader"] != rows[0]["trader"] for a in D.apply_cheapest())     # 网查不进价格卡（只会用日报）
+    # 旧版泛报价（无 family）清理
+    sid = D.sourcing.upsert_supplier({"name": "旧网查商家", "kind": "贸易商"})
+    db.insert("supplier_quotes", {"supplier_id": sid, "material_code": "LL", "grade": "x", "price": 8000, "unit": "元/吨", "basis": "", "moq": "",
+                                  "quote_date": "2026-09-01", "source_url": "u", "evidence": "", "credibility": 2, "status": "网查", "in_rfq": 0,
+                                  "note": "", "created_at": db.now()})
+    purged = D.purge_old_web_quotes()
+    assert purged["quotes"] >= 1 and db.q1("SELECT id FROM suppliers WHERE name='旧网查商家'") is None
+    assert len(D.web_rows("LLDPE")) == 1                                          # 新口径的网查报价保留

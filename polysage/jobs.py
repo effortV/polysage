@@ -102,10 +102,11 @@ def _label(name: str) -> str:
     return JOB_NAMES.get(name) or state.STAGE_NAMES.get(name, name)
 
 
-def start_sourcing(codes: list[str] | None = None, **kw: Any) -> bool:
-    from . import sourcing
+def start_sourcing(families: list[str] | None = None, **kw: Any) -> bool:
+    """网查同类报价（按日报口径：厂家+牌号+仓库地+状态+含税价），只作对照。"""
+    from . import daily_quotes
 
-    return start("sourcing", lambda: sourcing.run(codes, **kw))
+    return start("sourcing", lambda: daily_quotes.web_market_quotes(families, **kw))
 
 
 def start(name: str, fn: Callable[[], Any]) -> bool:

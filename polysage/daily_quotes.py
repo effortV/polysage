@@ -9,8 +9,9 @@ from __future__ import annotations
 import re
 from datetime import date as _date
 from typing import Any
+from urllib.parse import urlparse
 
-from . import db, kb, llm, pricing, sourcing
+from . import activity, db, kb, llm, pricing, sourcing
 from .config import KB
 from .formulation import materials as MAT
 
@@ -156,15 +157,16 @@ def _code_for(family: str) -> str | None:
     return codes[0] if codes else None
 
 
-def save_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
-    """入库到 supplier_quotes（channel=日报，报价商作为供应商）。返回 {新增, 重复, 跳过}。"""
+def save_rows(rows: list[dict[str, Any]], *, channel: str = "日报", credibility: int = 5) -> dict[str, int]:
+    """入库到 supplier_quotes（报价商作为供应商）。channel=日报（贸易商发来的）/ 网查（对照）。返回 {新增, 重复, 跳过}。"""
     n_new = n_dup = n_skip = 0
     for r in rows:
         code = _code_for(r["family"])
         if not code:
             n_skip += 1
             continue
-        sid = sourcing.upsert_supplier({"name": r["trader"], "kind": "贸易商", "materials": code, "credibility": 5, "status": "日报"})
+        sid = sourcing.upsert_supplier({"name": r["trader"], "kind": "贸易商" if channel == "日报" else "网查来源", "materials": code,
+                                        "credibility": credibility, "status": channel})
         grade = f"{r['producer']} {r['grade']}".strip()   # 库里“牌号”带厂家，通用结果页也能看懂
         dup = db.q1("SELECT id FROM supplier_quotes WHERE supplier_id=? AND material_code=? AND IFNULL(grade,'')=? "
                     "AND IFNULL(warehouse,'')=? AND quote_date=? AND price=?",
@@ -175,11 +177,11 @@ def save_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
         db.insert("supplier_quotes", {
             "supplier_id": sid, "material_code": code, "grade": grade, "price": r["price"], "unit": "元/吨",
             "basis": ("含税(H)" if r["tax_included"] else "不含税") + (f" {r['note']}" if r["note"] else ""), "moq": "",
-            "quote_date": r["date"], "source_url": f"贸易商日报：{r['trader']} {r['date']}",
+            "quote_date": r["date"], "source_url": r.get("url") or f"贸易商日报：{r['trader']} {r['date']}",
             "evidence": f"{r['producer']} {r['grade']} {r['warehouse']} {r['delivery']} {r['price']:.0f}{'H' if r['tax_included'] else ''}",
-            "credibility": 5, "status": "网查", "in_rfq": 0, "actual_price": None, "note": "", "created_at": db.now(),
+            "credibility": credibility, "status": "网查", "in_rfq": 0, "actual_price": None, "note": "", "created_at": db.now(),
             "family": r["family"], "producer": r["producer"], "warehouse": r["warehouse"], "delivery": r["delivery"],
-            "landed_price": r["landed"], "channel": "日报",
+            "landed_price": r["landed"], "channel": channel,
         })
         n_new += 1
     return {"new": n_new, "dup": n_dup, "skip": n_skip}
@@ -275,3 +277,169 @@ def picks_text(quote_date: str | None = None) -> str:
         for r in p["top"][1:]:
             lines.append(f"    次选：{r['grade']} @ {r['warehouse'] or '未注明'} 到厂 {r['landed_price']:.0f}（{r['delivery']}）")
     return "\n".join(lines)
+
+
+# ---------------- 网查同类报价（对照，不自动进价格卡） ----------------
+
+WEB_PROMPT = (
+    "下面是一个塑料行情/报价网页的正文。请把其中【{family_cn}】（关键词：{keys}）的贸易商/市场报价拆成结构化行。输出 JSON："
+    "{{\"quotes\": [{{\"family\": \"LLDPE|LDPE|HDPE|mLLDPE|其他\", \"producer\": \"生产厂家（浙石化/宝来/裕龙/镇海/大庆/独山子/泉化/万华/乐天/华泰/中沙/扬子/茂名…）\", "
+    "\"grade\": \"牌号（7042/7047/2426H/6098/TR144/5110…）\", \"warehouse\": \"仓库地/市场（杭州/上海/宁波/太仓/华东…，没有留空）\", "
+    "\"delivery\": \"货物状态（现货/在途/计划/期货…，没有留空）\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
+    "\"seller\": \"报价方：贸易商名或市场名（如 生意社华东/塑料在线-某某塑化），没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写就留空\"}}]}}。"
+    "只要人民币元/吨的报价，元/kg 换算；行情站的“市场价/主流价”也算一条（seller 写市场名，delivery 写 市场价）；"
+    "日期尽量从页面上取（更新时间、发布时间），取不到留空。最多 20 条，优先华东（上海/杭州/宁波/江苏/浙江）与价格低的。\n\n网页：{url}\n正文：\n{text}"
+)
+# 默认目标（没有日报时的兜底）：厂家+牌号
+DEFAULT_TARGETS: dict[str, list[tuple[str, str]]] = {
+    "LLDPE": [("浙石化", "7042"), ("宝来", "7042"), ("裕龙", "7042"), ("华泰", "7042"), ("中沙", "7042"), ("扬子", "7042")],
+    "LDPE": [("浙石化", "2426H"), ("扬子", "2426H"), ("茂名", "2426H")],
+    "HDPE": [("镇海", "6098"), ("大庆", "6097"), ("裕龙", "TR144"), ("独山子", "6095H")],
+    "mLLDPE": [("埃克森", "1018"), ("陶氏", "5400G")],
+}
+FAMILY_CN = {"LLDPE": "线性低密度聚乙烯 LLDPE", "LDPE": "高压低密度聚乙烯 LDPE", "HDPE": "低压高密度聚乙烯 HDPE", "mLLDPE": "茂金属 mLLDPE"}
+WEB_MAX_AGE_DAYS = 14
+
+
+def seed_targets(family: str) -> list[tuple[str, str]]:
+    """从最近的日报里取该类的 厂家+牌号 作检索目标；没有就用默认表。"""
+    rows = db.q("SELECT DISTINCT producer, grade FROM supplier_quotes WHERE channel='日报' AND family=? AND status!='不可信' "
+                "ORDER BY quote_date DESC LIMIT 12", (family,))
+    out = []
+    for r in rows:
+        g = (r.get("grade") or "").replace(r.get("producer") or "", "").strip()
+        if r.get("producer") and g:
+            out.append((r["producer"], g))
+    return out or DEFAULT_TARGETS.get(family, [])
+
+
+def web_queries(family: str, depth: str = "标准") -> list[str]:
+    targets = seed_targets(family)
+    grades = list(dict.fromkeys(g for _, g in targets))
+    fam_cn = {"LLDPE": "线性", "LDPE": "高压", "HDPE": "低压", "mLLDPE": "茂金属"}.get(family, family)
+    qs: list[str] = []
+    for p, g in targets[:4]:
+        qs.append(f"{p}{g} 报价 华东")
+    for g in grades[:3]:
+        qs.append(f"{g} 杭州 现货 报价")
+        qs.append(f"site:plasway.com {g}")
+    qs.append(f"PE {fam_cn} 华东 市场报价 今日 贸易商")
+    qs.append(f"site:100ppi.com {family}")
+    n = {"快": 3, "标准": 6, "深": 10}.get(depth, 6)
+    return list(dict.fromkeys(qs))[:n]
+
+
+def _fresh(date_str: str, today: _date) -> bool:
+    m = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", date_str or "")
+    if not m:
+        return False
+    try:
+        d = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return False
+    return 0 <= (today - d).days <= WEB_MAX_AGE_DAYS
+
+
+def extract_web_quotes(family: str, url: str, text: str, today: _date, page_date: str = "") -> list[dict[str, Any]]:
+    """page_date：页面的发布/更新日期（抓取时从 meta 取），报价行没写日期时用它。"""
+    keys = "、".join(f"{p}{g}" for p, g in seed_targets(family)[:6])
+    try:
+        data = llm.chat_json([{"role": "system", "content": "你是塑料原料采购助理，输出严格 JSON。"},
+                              {"role": "user", "content": WEB_PROMPT.format(family_cn=FAMILY_CN.get(family, family), keys=keys, url=url, text=text[:8000])}],
+                             max_tokens=4000)
+    except Exception as e:  # noqa: BLE001
+        sourcing._log(f"网查抽取失败 {url[:60]}：{e}")
+        return []
+    freight = load_freight()
+    host = urlparse(url).netloc.replace("www.", "")
+    rows = []
+    for q in (data.get("quotes") if isinstance(data, dict) else None) or []:
+        price = _num(q.get("price"))
+        fam = q.get("family") if q.get("family") in FAMILIES else "其他"
+        if price is None or fam != family:
+            continue
+        date_str = (q.get("date") or "").strip()
+        if not _fresh(date_str, today):
+            date_str = page_date
+        if not _fresh(date_str, today):
+            continue  # 没日期或超过两周的不要：过期报价比没有还坏
+        wh = (q.get("warehouse") or "").strip()[:30]
+        seller = (q.get("seller") or "").strip()[:40] or host
+        rows.append({"family": fam, "producer": (q.get("producer") or "").strip()[:30], "grade": (q.get("grade") or "").strip()[:30],
+                     "warehouse": wh, "delivery": (q.get("delivery") or "").strip()[:30], "price": price,
+                     "tax_included": bool(q.get("tax_included", True)), "note": "", "freight": freight_for(wh, freight),
+                     "landed": price + freight_for(wh, freight), "trader": f"{seller}（{host}）" if host not in seller else seller,
+                     "date": re.sub(r"[/.年月]", "-", date_str).rstrip("日-")[:10], "url": url})
+    return rows
+
+
+def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准", pages_per_query: int = 3,
+                      echo: Any = None) -> dict[str, Any]:
+    """按日报同样的口径网查同类报价（厂家+牌号+仓库地+状态+含税价），入库 channel=网查，只作对照。"""
+    from .sources.fetch import fetch_url
+    from .sources.websearch import search as web_search
+
+    families = families or ["LLDPE", "LDPE", "HDPE"]
+    today = _date.today()
+    summary: dict[str, Any] = {}
+    activity.note(f"网查同类报价：{'、'.join(families)}")
+    for fam in families:
+        seen: set[str] = set()
+        pages: list[tuple[str, str]] = []
+        for q in web_queries(fam, depth):
+            try:
+                hits = web_search(q, limit=8, bing_first=True, timelimit="m")
+            except Exception as e:  # noqa: BLE001
+                sourcing._log(f"[{fam}] 搜索失败「{q}」：{str(e)[:80]}", echo)
+                continue
+            picked = stale = 0
+            for h in hits:
+                if picked >= pages_per_query or not h.url or h.url in seen:
+                    continue
+                seen.add(h.url)
+                try:
+                    page = fetch_url(h.url)
+                except Exception:  # noqa: BLE001
+                    continue
+                text = page.get("text") or ""
+                if len(text) < 200:
+                    continue
+                page_date = page.get("date") or ""
+                if page_date and not _fresh(page_date, today):
+                    stale += 1  # 页面本身超过两周，整页跳过，省一次模型调用
+                    continue
+                picked += 1
+                pages.append((h.url, text, page_date))
+            if stale:
+                sourcing._log(f"[{fam}]「{q}」跳过 {stale} 个两周前的旧页面", echo)
+        sourcing._log(f"[{fam}] 网查：{len(pages)} 个近期页面，开始抽取", echo)
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            results = list(ex.map(lambda p: extract_web_quotes(fam, p[0], p[1], today, p[2]), pages))
+        rows = [r for rs in results for r in rs]
+        saved = save_rows(rows, channel="网查", credibility=3)
+        best = min(rows, key=lambda r: r["landed"]) if rows else None
+        sourcing._log(f"[{fam}] 网查完成：{len(rows)} 条近两周报价，新增 {saved['new']}" +
+                      (f"，最低到厂 {best['landed']:.0f}（{best['producer']} {best['grade']} @ {best['warehouse'] or '未注明'}，{best['trader']}）" if best else ""), echo)
+        summary[fam] = {"pages": len(pages), "rows": len(rows), **saved, "best": best}
+    db.insert("sourcing_runs", {"at": db.now(), "codes_json": db.dumps(families), "summary_json": db.dumps({k: {kk: vv for kk, vv in v.items() if kk != "best"} for k, v in summary.items()}),
+                                "note": f"网查同类报价 depth={depth}"})
+    return summary
+
+
+def web_rows(family: str, days: int = WEB_MAX_AGE_DAYS, top: int = 5) -> list[dict[str, Any]]:
+    """最近 days 天的网查报价，按到厂价升序。"""
+    since = (_date.today() - __import__("datetime").timedelta(days=days)).isoformat()
+    rows = db.q("SELECT q.*, s.name AS trader FROM supplier_quotes q JOIN suppliers s ON s.id=q.supplier_id "
+                "WHERE q.channel='网查' AND q.family=? AND q.quote_date>=? AND q.status!='不可信' ORDER BY q.landed_price ASC, q.id DESC", (family, since))
+    return rows[:top]
+
+
+def purge_old_web_quotes() -> dict[str, int]:
+    """清掉旧版寻源抓的泛报价（没有类别/到厂价那批）和没有报价的孤儿厂商。"""
+    n_q = db.q1("SELECT COUNT(*) AS n FROM supplier_quotes WHERE IFNULL(channel,'网查')!='日报' AND family IS NULL")["n"]
+    db.execute("DELETE FROM supplier_quotes WHERE IFNULL(channel,'网查')!='日报' AND family IS NULL")
+    n_s = db.q1("SELECT COUNT(*) AS n FROM suppliers WHERE id NOT IN (SELECT DISTINCT supplier_id FROM supplier_quotes) AND status NOT IN ('日报','手动','已合作','已报价')")["n"]
+    db.execute("DELETE FROM suppliers WHERE id NOT IN (SELECT DISTINCT supplier_id FROM supplier_quotes) AND status NOT IN ('日报','手动','已合作','已报价')")
+    return {"quotes": n_q, "suppliers": n_s}

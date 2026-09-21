@@ -13,7 +13,7 @@ MAT.seed_materials()
 
 mats = MAT.list_materials(active_only=True)
 names = {m["code"]: m["name"] for m in mats}
-tab_daily, tab_run, tab_res, tab_rfq, tab_sup = st.tabs(["贸易商日报", "寻源", "结果", "询价清单", "厂商库"], key="sourcing-workspace-tab", on_change="rerun")
+tab_daily, tab_run, tab_res, tab_rfq, tab_sup = st.tabs(["贸易商日报", "网查对照", "结果", "询价清单", "厂商库"], key="sourcing-workspace-tab", on_change="rerun")
 
 
 def _fmt_price(v):
@@ -103,6 +103,8 @@ def _render_tab_daily() -> None:
                     for h in daily_quotes.history(f):
                         hist.setdefault(h["d"], {})[daily_quotes.FAMILY_LABEL[f]] = h["landed"]
                 st.line_chart(pd.DataFrame.from_dict(hist, orient="index").sort_index())
+    with ui.expander("网查对照（同口径，近两周）"):
+        _render_web_compare([f for f in daily_quotes.FAMILIES if f != "其他"])
     with ui.expander("运费表（仓库地 → 到厂，元/吨；按子串匹配，改完保存）"):
         fdf = pd.DataFrame([{"仓库地": k, "运费": v} for k, v in daily_quotes.load_freight().items()])
         fedit = st.data_editor(fdf, hide_index=True, num_rows="dynamic", key="freight_editor", **ui.WIDE)
@@ -111,25 +113,25 @@ def _render_tab_daily() -> None:
             st.success("已保存；下次解析按新运费算到厂价。")
 
 
-# ---------------- 寻源 ----------------
+# ---------------- 网查对照 ----------------
 def _render_tab_run() -> None:
-    st.caption("网查到的是挂牌价 / 平台标价，口径常不一致；用来确定该向谁询价和大致区间，实价以询价为准。")
-    default_codes = [m["code"] for m in mats if m.get("use_flag") != "默认不用"][:8]
+    st.caption("按贸易商日报同样的口径（厂家 + 牌号 + 仓库地 + 货物状态 + 含税价）到行情站/报价页网查近两周的报价，只作对照，不进价格卡。"
+               "检索目标取自最近日报里的厂家+牌号（没有日报时用默认牌号表）。")
+    fams = [f for f in daily_quotes.FAMILIES if f != "其他"]
     c1, c2 = st.columns([3, 1])
-    codes = c1.multiselect("材料", options=[m["code"] for m in mats], default=default_codes,
-                           format_func=lambda c: f"{c} · {names.get(c, c)}")
-    depth = c2.selectbox("深度", list(sourcing.DEPTHS), index=1, help="每种材料的检索词条数：快 2、标准 4、深 6；每条取 3 个页面")
-    c3, c4 = st.columns([3, 1])
-    extra = c3.text_input("补充关键词（可选）", placeholder="例如：华东 现货 / 某牌号 / 某地区")
-    only_prod = c4.checkbox("结果只看生产商/回收厂", value=False)
+    pick = c1.multiselect("类别", fams, default=["LLDPE", "LDPE", "HDPE"], format_func=lambda f: daily_quotes.FAMILY_LABEL[f])
+    depth = c2.selectbox("深度", ["快", "标准", "深"], index=1, help="每类检索词条数：快 3、标准 6、深 10；每条取 3 个页面")
+    with ui.expander("本次会用的检索词"):
+        for f in pick:
+            st.markdown(f"**{daily_quotes.FAMILY_LABEL[f]}**：" + "；".join(daily_quotes.web_queries(f, depth)))
     running = jobs.is_running()
-    if st.button("开始寻源", type="primary", disabled=running or not codes):
-        if jobs.start_sourcing(codes, depth=depth, extra=extra, only_producers=only_prod):
+    if st.button("开始网查", type="primary", disabled=running or not pick):
+        if jobs.start_sourcing(pick, depth=depth):
             st.rerun()
         else:
             st.warning("已有后台任务在运行，等它结束或在侧栏删除后再试。")
     if running and jobs.current() == "sourcing":
-        st.info(f"寻源进行中（侧栏可暂停/删除）· 已运行 {activity.fmt_seconds(jobs.info()['elapsed'])}")
+        st.info(f"网查进行中（侧栏可暂停/删除）· 已运行 {activity.fmt_seconds(jobs.info()['elapsed'])}")
 
     @st.fragment(run_every="3s" if running else None)
     def _log_panel() -> None:
@@ -139,7 +141,21 @@ def _render_tab_run() -> None:
     _log_panel()
     lr = sourcing.last_run()
     if lr:
-        st.caption(f"上次寻源：{lr['at'][:16].replace('T', ' ')} · {', '.join(lr['codes'])}")
+        st.caption(f"上次网查：{lr['at'][:16].replace('T', ' ')} · {', '.join(lr['codes'])}")
+    _render_web_compare(fams)
+
+
+def _render_web_compare(fams: list[str]) -> None:
+    rows = []
+    for f in fams:
+        for i, r in enumerate(daily_quotes.web_rows(f), 1):
+            rows.append({"类别": daily_quotes.FAMILY_LABEL[f], "名次": i, "牌号": r["grade"], "仓库地": r["warehouse"], "货物状态": r["delivery"],
+                         "含税价": r["price"], "到厂价": r["landed_price"], "报价方": r["trader"], "日期": r["quote_date"], "来源": r["source_url"]})
+    if rows:
+        st.subheader("网查对照（近两周，每类前 5）")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, column_config={"来源": st.column_config.LinkColumn()}, **ui.WIDE)
+    else:
+        st.info("还没有网查报价；点“开始网查”。")
 
 # ---------------- 结果 ----------------
 def _render_tab_res() -> None:
