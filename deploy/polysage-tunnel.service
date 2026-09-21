@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel hdu-film (hn.hduai4s.cn -> localhost:8511)
+After=network-online.target polysage-server.service
+Wants=network-online.target
+
+[Service]
+User=adminisator
+Group=adminisator
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel --config /home/adminisator/.cloudflared/hdu-film.yml run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

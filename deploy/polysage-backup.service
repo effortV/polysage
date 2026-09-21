@@ -1,0 +1,9 @@
+[Unit]
+Description=PolySage daily backup (db snapshot + knowledge + .env)
+
+[Service]
+Type=oneshot
+User=adminisator
+Group=adminisator
+WorkingDirectory=/home/adminisator/data/zzh-new/hn-hdu
+ExecStart=/bin/bash /home/adminisator/data/zzh-new/hn-hdu/deploy/backup.sh

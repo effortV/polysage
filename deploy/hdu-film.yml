@@ -1,0 +1,8 @@
+# cloudflared 命名隧道配置（放到 ~/.cloudflared/hdu-film.yml；凭据 json 与 cert.pem 同目录，不入库）
+tunnel: f1a95f08-7fed-4be5-9135-d00636e1968a
+credentials-file: /home/adminisator/.cloudflared/f1a95f08-7fed-4be5-9135-d00636e1968a.json
+
+ingress:
+  - hostname: hn.hduai4s.cn
+    service: http://localhost:8511
+  - service: http_status:404

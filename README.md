@@ -42,6 +42,26 @@ powercfg /change hibernate-timeout-ac 0
 **迁移到正式服务器**：在新机器上克隆仓库、建 `.venv` 装依赖，把最新一份 `backups/polysage-*.zip` 解压到项目根目录
 （覆盖 `data/`、`knowledge/`、`.env`、`.streamlit/`），再按上面方式启动即可；数据库是单文件 SQLite，没有别的状态。
 
+### 0.1b Ubuntu 服务器（2026-09-21 起的正式部署）
+
+正式服务在实验室服务器 `112.15.87.51`（SSH 端口 9010）上：项目目录 `/home/adminisator/data/zzh-new/hn-hdu`，以用户 `adminisator` 运行。
+
+- `deploy/polysage-server.service`：Streamlit 常驻 0.0.0.0:8511（systemd，崩溃 5 s 自动拉起，开机自启）
+- `deploy/polysage-tunnel.service`：cloudflared 命名隧道 `hdu-film` → https://hn.hduai4s.cn（配置 `~/.cloudflared/hdu-film.yml`，凭据不入库）
+- `deploy/polysage-backup.timer`：每天 02:30 跑 `deploy/backup.sh`（数据库快照 + knowledge + .env + 隧道配置 → `backups/`，留 14 份）
+- 安装/更新单元：`sudo bash deploy/install.sh`
+
+常用命令（root）：
+
+```bash
+systemctl status polysage-server polysage-tunnel        # 状态
+journalctl -u polysage-server -n 100 --no-pager          # 服务日志
+systemctl restart polysage-server                        # 改完代码重启
+cd /home/adminisator/data/zzh-new/hn-hdu && sudo -u adminisator git pull && systemctl restart polysage-server   # 更新代码
+```
+
+笔记本上的计划任务已移除；本地开发仍可 `.un.ps1`（端口 8511，只连本地库）。
+
 ### 0.2 Streamlit Community Cloud（仅演示）
 
 1. 用 GitHub 账号登录 https://share.streamlit.io ，授权 Streamlit 读取仓库。

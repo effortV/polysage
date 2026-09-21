@@ -1,0 +1,19 @@
+[Unit]
+Description=HDU x HengNuo packaging-film AI4S (Streamlit, port 8511)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=adminisator
+Group=adminisator
+WorkingDirectory=/home/adminisator/data/zzh-new/hn-hdu
+Environment=PYTHONUTF8=1
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/home/adminisator/data/zzh-new/hn-hdu/.venv/bin/python -m streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8511 --server.headless true --server.fileWatcherType none --server.runOnSave false
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
