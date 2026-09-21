@@ -5,7 +5,7 @@ import streamlit as st
 
 from datetime import date
 
-from polysage import activity, daily_quotes, db, jobs, sourcing, ui
+from polysage import activity, daily_quotes, db, forecast, jobs, sourcing, ui
 from polysage.formulation import materials as MAT
 
 ui.page_header("供应商寻源", "为每种原料找厂商与报价，和价格卡比较，生成询价清单；询价核实后一键登记为实价。")
@@ -13,7 +13,7 @@ MAT.seed_materials()
 
 mats = MAT.list_materials(active_only=True)
 names = {m["code"]: m["name"] for m in mats}
-tab_daily, tab_run, tab_res, tab_rfq, tab_sup = st.tabs(["贸易商日报", "网查对照", "结果", "询价清单", "厂商库"], key="sourcing-workspace-tab", on_change="rerun")
+tab_daily, tab_run, tab_fc, tab_res, tab_rfq, tab_sup = st.tabs(["贸易商日报", "网查对照", "价格预判", "结果", "询价清单", "厂商库"], key="sourcing-workspace-tab", on_change="rerun")
 
 
 def _fmt_price(v):
@@ -111,6 +111,55 @@ def _render_tab_daily() -> None:
         if st.button("保存运费表"):
             daily_quotes.save_freight({str(r["仓库地"]): float(r["运费"]) for _, r in fedit.iterrows() if str(r["仓库地"]).strip() and not pd.isna(r["运费"])})
             st.success("已保存；下次解析按新运费算到厂价。")
+
+
+# ---------------- 价格预判 ----------------
+def _render_tab_forecast() -> None:
+    st.caption("期货（大商所 L 线性主连）+ 我们的现货报价历史 + 近一周行情评述 → 每类 1 周 / 1 月预期；"
+               "再把最近一次推荐的方案按预期价格重算成本，看哪些方案涨价也扛得住。只是参考，不是交易建议。")
+    c1, c2 = st.columns([1, 3])
+    if c1.button("更新预判（约 2～3 分钟）", type="primary", key="fc_run"):
+        with st.spinner("抓期货、找评述、模型判断…"):
+            try:
+                forecast.run()
+                st.success("已更新")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"更新失败：{e}")
+        st.rerun()
+    lt = forecast.latest()
+    if not lt:
+        st.info("还没有预判，点“更新预判”。")
+        return
+    c2.caption(f"最近更新：{next(iter(lt.values()))['at'][:16].replace('T', ' ')}")
+    cols = st.columns(len(lt))
+    for col, (fam, r) in zip(cols, lt.items()):
+        cur = r.get("current")
+        col.metric(forecast.FAMILY_LABEL[fam], f"{cur:,.0f}" if cur else "-",
+                   delta=(f"1 月 {r['pct_1m']:+.1f}% → {r['price_1m']:,.0f}" if r.get("price_1m") else None), delta_color="inverse",
+                   help=f"1 周 {r['pct_1w']:+.1f}% → {r.get('price_1w') or '-'}；方向 {r['direction']}；置信 {r['confidence']:.0%}")
+    for fam, r in lt.items():
+        with ui.expander(f"{forecast.FAMILY_LABEL[fam]}：{r['direction']}，1 周 {r['pct_1w']:+.1f}%，1 月 {r['pct_1m']:+.1f}%，置信 {r['confidence']:.0%}"):
+            m = r.get("method") or {}
+            st.caption(f"方法：{m.get('blend', '')}；模型给 1 月 {m.get('llm_pct_1m', 0):+.1f}%，期货隐含 "
+                       + (f"{m['futures_implied_1m']:+.1f}%" if m.get("futures_implied_1m") is not None else "不可用"))
+            for d in r.get("drivers") or []:
+                st.markdown(f"- {d.get('text')}" + (f"（[来源]({d['url']})）" if d.get("url") else ""))
+            if r.get("sources"):
+                st.markdown("评述来源：" + "；".join(f"[{x.get('title') or x.get('url')}]({x.get('url')})" for x in r["sources"] if x.get("url")))
+    try:
+        fs = forecast.futures_signal()
+        if fs.get("ok"):
+            st.markdown(f"**大商所 L 主连**：{fs['last']:.0f}（{fs['date']}），5 日 {fs['chg_5d']:+.1f}%，20 日 {fs['chg_20d']:+.1f}%，"
+                        f"MA5 {fs['ma5']} / MA20 {fs['ma20']}" + (f"，远月-近月 {fs['term_pct']:+.1f}%（{', '.join(f'{k} {v:.0f}' for k, v in fs['curve'].items())}）" if fs.get("term_pct") is not None else ""))
+            st.line_chart(pd.DataFrame(fs["series"], columns=["日期", "L 主连收盘"]).set_index("日期"))
+    except Exception as e:  # noqa: BLE001
+        st.caption(f"期货数据暂不可用：{e}")
+    rows = forecast.scheme_impact(top_n=12)
+    if rows:
+        st.subheader("预期价格（1 月）下的方案成本")
+        st.dataframe(pd.DataFrame([{"方案": r["name"], "主题": r["theme"], "现成本": r["cost_now"], "预期成本": r["cost_future"],
+                                    "变化": r["delta"], "变化%": r["delta_pct"]} for r in rows]), hide_index=True, **ui.WIDE)
+        st.caption("变化% 越小的方案对涨价越不敏感；配方推荐助手已经能看到这份预判。")
 
 
 # ---------------- 网查对照 ----------------
@@ -288,6 +337,7 @@ def _render_tab_sup() -> None:
 _TAB_RENDERERS = (
     (tab_daily, _render_tab_daily),
     (tab_run, _render_tab_run),
+    (tab_fc, _render_tab_forecast),
     (tab_res, _render_tab_res),
     (tab_rfq, _render_tab_rfq),
     (tab_sup, _render_tab_sup),

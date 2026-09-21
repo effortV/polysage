@@ -363,6 +363,21 @@ def import_trader_quotes(text: str, trader: str, date: str = ""):
     return head + "\n" + daily_quotes.picks_text(res["date"]), []
 
 
+@tool("price_outlook", "查看最新的价格预判（每类树脂 1 周 / 1 月预期、方向、依据）以及各候选方案在预期价格下的成本变化；refresh=true 时先重新计算（约 2 分钟）。",
+      {"refresh": {"type": "boolean", "description": "是否重新计算预判"}})
+def price_outlook(refresh: bool = False):
+    from .. import forecast
+
+    if refresh:
+        forecast.run()
+    text = forecast.outlook_text()
+    rows = forecast.scheme_impact(top_n=8)
+    if rows:
+        text += "\n\n预期价格（1 月）下的方案成本：\n" + "\n".join(
+            f"- {r['name']}：现 {r['cost_now']} → 预期 {r['cost_future']}（{r['delta']:+d}，{r['delta_pct']:+.1f}%）" for r in rows)
+    return text, []
+
+
 @tool("daily_picks", "查看最近一次贸易商日报里每类树脂（LLDPE/LDPE/HDPE）的最低到厂价与次选。", {})
 def daily_picks():
     from .. import daily_quotes

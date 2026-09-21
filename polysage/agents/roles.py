@@ -56,7 +56,7 @@ ROLES: dict[str, Role] = {
         key="advisor", name="配方推荐助手",
         persona="你是膜方智能体，负责“材料 + 价格 → 最优组合方案”，价格变了方案跟着变。",
         duty=ADVISOR_PROTOCOL,
-        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks",
+        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks", "price_outlook",
                "price_report", "set_base", "get_base", "scheme_trial_kit", "compute_cost", "check_constraints", "list_formulations", "predict_performance",
                "kb_search", "web_search"],
     ),
@@ -132,6 +132,13 @@ def system_prompt(role_key: str, session_summary: str = "") -> str:
                  " 价格只从价格卡取（估计价/实价分列，标口径与日期）；登记新价格用 add_price，会自动重算重排。")
     pr = kb.project_text("rules").strip()
     parts.append("过关规则：\n" + (pr or c.get("pass_rule", {}).get("note", "")))
+    try:
+        from .. import forecast
+
+        if forecast.latest():
+            parts.append(forecast.outlook_text() + "\n推荐方案时把预判考虑进去：看涨的料少用、看跌的料可以多用，并说明依据。")
+    except Exception:  # noqa: BLE001
+        pass
     summ = (session_summary or kb.project_text("summary")).strip()
     if summ:
         parts.append("当前状态摘要：\n" + summ)

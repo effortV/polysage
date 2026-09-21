@@ -248,6 +248,23 @@ CREATE TABLE IF NOT EXISTS sourcing_runs (
     summary_json TEXT,
     note TEXT
 );
+
+-- 价格预判：每类树脂 1 周 / 1 月的预期（期货 + 现货历史 + 行情评述）
+CREATE TABLE IF NOT EXISTS price_forecasts (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    family TEXT NOT NULL,
+    current REAL,
+    price_1w REAL,
+    price_1m REAL,
+    pct_1w REAL,
+    pct_1m REAL,
+    direction TEXT,
+    confidence REAL,
+    drivers_json TEXT,
+    sources_json TEXT,
+    method_json TEXT
+);
 """
 
 # 旧库升级：materials 表新增列（幂等）

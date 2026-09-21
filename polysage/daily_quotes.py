@@ -298,7 +298,7 @@ DEFAULT_TARGETS: dict[str, list[tuple[str, str]]] = {
     "mLLDPE": [("埃克森", "1018"), ("陶氏", "5400G")],
 }
 FAMILY_CN = {"LLDPE": "线性低密度聚乙烯 LLDPE", "LDPE": "高压低密度聚乙烯 LDPE", "HDPE": "低压高密度聚乙烯 HDPE", "mLLDPE": "茂金属 mLLDPE"}
-WEB_MAX_AGE_DAYS = 14
+WEB_MAX_AGE_DAYS = 7  # 用户要求：网查只要近一周的
 
 
 def seed_targets(family: str) -> list[tuple[str, str]]:
@@ -362,7 +362,7 @@ def extract_web_quotes(family: str, url: str, text: str, today: _date, page_date
         if not _fresh(date_str, today):
             date_str = page_date
         if not _fresh(date_str, today):
-            continue  # 没日期或超过两周的不要：过期报价比没有还坏
+            continue  # 没日期或超过一周的不要：过期报价比没有还坏
         wh = (q.get("warehouse") or "").strip()[:30]
         seller = (q.get("seller") or "").strip()[:40] or host
         rows.append({"family": fam, "producer": (q.get("producer") or "").strip()[:30], "grade": (q.get("grade") or "").strip()[:30],
@@ -388,7 +388,7 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
         pages: list[tuple[str, str]] = []
         for q in web_queries(fam, depth):
             try:
-                hits = web_search(q, limit=8, bing_first=True, timelimit="m")
+                hits = web_search(q, limit=8, bing_first=True, timelimit="w")
             except Exception as e:  # noqa: BLE001
                 sourcing._log(f"[{fam}] 搜索失败「{q}」：{str(e)[:80]}", echo)
                 continue
@@ -406,12 +406,12 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
                     continue
                 page_date = page.get("date") or ""
                 if page_date and not _fresh(page_date, today):
-                    stale += 1  # 页面本身超过两周，整页跳过，省一次模型调用
+                    stale += 1  # 页面本身超过一周，整页跳过，省一次模型调用
                     continue
                 picked += 1
                 pages.append((h.url, text, page_date))
             if stale:
-                sourcing._log(f"[{fam}]「{q}」跳过 {stale} 个两周前的旧页面", echo)
+                sourcing._log(f"[{fam}]「{q}」跳过 {stale} 个一周前的旧页面", echo)
         sourcing._log(f"[{fam}] 网查：{len(pages)} 个近期页面，开始抽取", echo)
         from concurrent.futures import ThreadPoolExecutor
 
@@ -420,7 +420,7 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
         rows = [r for rs in results for r in rs]
         saved = save_rows(rows, channel="网查", credibility=3)
         best = min(rows, key=lambda r: r["landed"]) if rows else None
-        sourcing._log(f"[{fam}] 网查完成：{len(rows)} 条近两周报价，新增 {saved['new']}" +
+        sourcing._log(f"[{fam}] 网查完成：{len(rows)} 条近一周报价，新增 {saved['new']}" +
                       (f"，最低到厂 {best['landed']:.0f}（{best['producer']} {best['grade']} @ {best['warehouse'] or '未注明'}，{best['trader']}）" if best else ""), echo)
         summary[fam] = {"pages": len(pages), "rows": len(rows), **saved, "best": best}
     db.insert("sourcing_runs", {"at": db.now(), "codes_json": db.dumps(families), "summary_json": db.dumps({k: {kk: vv for kk, vv in v.items() if kk != "best"} for k, v in summary.items()}),

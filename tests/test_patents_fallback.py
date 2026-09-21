@@ -42,3 +42,26 @@ def test_pubchem_id_and_record_parsing(monkeypatch):
     assert p["source"] == "pubchem" and p["title"] == "Metallocene polyethylene film resin composition"
     assert p["abstract"] == "A composition ..." and p["assignee"] == "PETROCHINA CO LTD" and p["publication_date"] == "2011-08-31"
     assert p["claims"] == "" and "PubChem" in p["note"]
+
+
+def test_bing_html_parser(monkeypatch):
+    import httpx
+
+    from polysage import net
+    from polysage.sources import websearch as W
+
+    html = """<html><body><ol id="b_results">
+    <li class="b_algo"><h2><a href="https://www.sohu.com/a/1">生意社：9月17日 PE 日评</a></h2><div class="b_caption"><p>浙石化7042 华东 厂提 9380 元/吨</p></div></li>
+    <li class="b_algo"><h2><a href="javascript:void(0)">坏链接</a></h2></li>
+    <li class="b_algo"><h2><a href="https://s.plasway.com/price/x.html">7042 价格</a></h2><p>东莞 7878</p></li>
+    </ol></body></html>"""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, text=html)
+
+    monkeypatch.setattr(net, "client", lambda url=None, **kw: httpx.Client(transport=httpx.MockTransport(handler)))
+    hits = W._bing_html("浙石化7042 报价", 8, "w")
+    assert [h.url for h in hits] == ["https://www.sohu.com/a/1", "https://s.plasway.com/price/x.html"]
+    assert hits[0].abstract.startswith("浙石化7042") and "ez2" in seen["url"] and "cn.bing.com" in seen["url"]

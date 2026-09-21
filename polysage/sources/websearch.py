@@ -54,6 +54,41 @@ DEFAULT_CHAIN = (("bing", None, 25), ("bing", "wt-wt", 25), ("duckduckgo", "wt-w
 BING_FIRST_CHAIN = DEFAULT_CHAIN
 
 
+_BING_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+_BING_FRESH = {"d": "ez1", "w": "ez2", "m": "ez3"}
+
+
+def _bing_html(query: str, limit: int, timelimit: str | None = None) -> list[SearchHit]:
+    """直接解析 cn.bing.com 结果页：服务器（无代理）上 ddgs 的 bing 后端常失败，这个最稳；timelimit d/w/m 对应必应的时间筛选。"""
+    from urllib.parse import quote
+
+    from bs4 import BeautifulSoup
+
+    url = f"https://cn.bing.com/search?q={quote(query)}&mkt=zh-CN&setlang=zh-hans&count={min(max(limit, 10), 30)}"
+    if timelimit in _BING_FRESH:
+        url += f"&filters=ex1%3a%22{_BING_FRESH[timelimit]}%22"
+    with net.client(url, timeout=25, follow_redirects=True) as c:
+        r = c.get(url, headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"})
+    if r.status_code >= 400:
+        raise RuntimeError(f"bing {r.status_code}")
+    soup = BeautifulSoup(r.text, "lxml")
+    hits: list[SearchHit] = []
+    for li in soup.select("li.b_algo"):
+        a = li.select_one("h2 a")
+        href = (a.get("href") if a else "") or ""
+        if not href.startswith("http"):
+            continue
+        p = li.select_one(".b_caption p") or li.select_one("p")
+        st, cred = _classify(href)
+        hits.append(SearchHit(provider="bing", external_id=href, title=a.get_text(" ", strip=True) if a else "", source_type=st, url=href,
+                              abstract=p.get_text(" ", strip=True) if p else "", credibility=cred))
+        if len(hits) >= limit:
+            break
+    if not hits:
+        raise RuntimeError("bing 无结果")
+    return hits
+
+
 def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN, timelimit: str | None = None) -> list[SearchHit]:
     from ddgs import DDGS
 
@@ -61,6 +96,11 @@ def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN, timelimit: st
     # 这边网络到各引擎时好时坏，按顺序试几种“引擎 + 地区”组合，拿到结果就停。
     rows: list[dict] = []
     last: Exception | None = None
+    # 先走自带的必应解析（直连、带时间筛选）；失败再走 ddgs 的各引擎
+    try:
+        return _bing_html(query, limit, timelimit)
+    except Exception as e:  # noqa: BLE001
+        last = e
     for round_ in range(2):  # 整条链都失败再等 2 s 重来一遍（网络抖动多为瞬时）
         for backend, reg, timeout in chain:
             try:
