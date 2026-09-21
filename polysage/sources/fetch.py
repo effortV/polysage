@@ -45,4 +45,35 @@ def fetch_url(url: str) -> dict:
             t.decompose()
         text = re.sub(r"\n{3,}", "\n\n", soup.get_text("\n"))
         title = title or (soup.title.string.strip() if soup.title and soup.title.string else "")
+    page_date = _better_date(url, html, title, page_date)
     return {"kind": "html", "text": text.strip(), "file_path": "", "title": title, "date": page_date}
+
+
+_TITLE_DATE = re.compile(r"(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})")
+
+
+def _better_date(url: str, html: str, title: str, page_date: str) -> str:
+    """trafilatura 的日期常被微信/门户页面里的旧日期骗过：微信文章用 ct 时间戳；标题里写明的日期（2026.09.15）优先。"""
+    m = _TITLE_DATE.search(title or "")
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m2 = re.search(r"(?<![\d.])(\d{1,2})[.\-月](\d{1,2})(?:日|-|\)|）| )", title or "")  # 周评(9.14-9.18)：没写年份的按今年
+    if m2:
+        from datetime import date, timedelta
+
+        try:
+            d = date(date.today().year, int(m2.group(1)), int(m2.group(2)))
+            if timedelta(0) <= date.today() - d <= timedelta(days=60):
+                return d.isoformat()
+        except ValueError:
+            pass
+    if "mp.weixin.qq.com" in url:
+        mc = re.search(r'var\s+ct\s*=\s*"(\d{10})"', html) or re.search(r'"publish_time"\s*:\s*"?(\d{10})', html)
+        if mc:
+            from datetime import datetime
+
+            return datetime.fromtimestamp(int(mc.group(1))).strftime("%Y-%m-%d")
+    mp = re.search(r'property="article:published_time"\s+content="(20\d{2}-\d{2}-\d{2})', html)
+    if mp:
+        return mp.group(1)
+    return page_date

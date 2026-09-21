@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import time
 
 from typing import Any
@@ -86,6 +88,94 @@ def _bing_html(query: str, limit: int, timelimit: str | None = None) -> list[Sea
             break
     if not hits:
         raise RuntimeError("bing 无结果")
+    if not _relevant(query, hits):
+        raise RuntimeError("bing 疑似降级结果（对爬虫返回无关页面）")
+    return hits
+
+
+def _relevant(query: str, hits: list[SearchHit], min_ratio: float = 0.3) -> bool:
+    """必应/百度对可疑来源会返回“首字百科”之类的无关结果：要求至少三成结果的标题或摘要含查询里的某个词。"""
+    toks = [t for t in re.split(r"\s+", query.replace("site:", " ")) if len(t) >= 2 and not t.startswith("site:")]
+    toks = [t for t in toks if "." not in t]  # 去掉域名
+    if not toks:
+        return True
+    ok = sum(1 for h in hits if any(t in (h.title + " " + h.abstract) for t in toks))
+    return ok >= max(1, int(len(hits) * min_ratio))
+
+
+_SOGOU_FRESH = {"d": "1", "w": "2", "m": "3"}
+_JS_REDIRECT = re.compile(r"""(?:location\.replace|window\.location(?:\.href)?\s*=|URL=)\s*\(?["']?(https?://[^"'\s)]+)""")
+
+
+def _sogou_html(query: str, limit: int, timelimit: str | None = None) -> list[SearchHit]:
+    """搜狗网页搜索：服务器（国内 IP、无代理）上最稳的一家，支持一天/一周/一月内筛选；结果是跳转链接，逐个解析成真实网址。"""
+    from urllib.parse import quote
+
+    from bs4 import BeautifulSoup
+
+    url = f"https://www.sogou.com/web?query={quote(query)}"
+    if timelimit in _SOGOU_FRESH:
+        url += f"&tsn={_SOGOU_FRESH[timelimit]}"
+    hits: list[SearchHit] = []
+    with net.client(url, timeout=25, follow_redirects=True) as c:
+        r = c.get(url, headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"})
+        if r.status_code >= 400:
+            raise RuntimeError(f"sogou {r.status_code}")
+        soup = BeautifulSoup(r.text, "lxml")
+        for it in soup.select("div.vrwrap, div.rb"):
+            a = it.select_one("h3 a")
+            if not a:
+                continue
+            href = a.get("href") or ""
+            if href.startswith("/link?"):
+                # 搜狗跳转页是 JS 跳转：<script>window.location.replace("真实网址")</script>
+                try:
+                    rr = c.get("https://www.sogou.com" + href, headers={"User-Agent": _BING_UA})
+                    m = _JS_REDIRECT.search(rr.text)
+                    href = m.group(1) if m else str(rr.url)
+                except Exception:  # noqa: BLE001
+                    continue
+            if not href.startswith("http") or "sogou.com" in href:
+                continue
+            snippet = it.select_one("p.str-text, p.str_info, div.ft, p")
+            st, cred = _classify(href)
+            hits.append(SearchHit(provider="sogou", external_id=href, title=a.get_text(" ", strip=True), source_type=st, url=href,
+                                  abstract=snippet.get_text(" ", strip=True) if snippet else "", credibility=cred))
+            if len(hits) >= limit:
+                break
+    if not hits:
+        raise RuntimeError("sogou 无结果")
+    return hits
+
+
+def _so360_html(query: str, limit: int) -> list[SearchHit]:
+    """360 搜索兜底（没有可靠的时间筛选，靠页面日期过滤）。"""
+    from urllib.parse import quote
+
+    from bs4 import BeautifulSoup
+
+    url = f"https://www.so.com/s?q={quote(query)}"
+    with net.client(url, timeout=25, follow_redirects=True) as c:
+        r = c.get(url, headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"})
+    if r.status_code >= 400:
+        raise RuntimeError(f"360 {r.status_code}")
+    soup = BeautifulSoup(r.text, "lxml")
+    hits: list[SearchHit] = []
+    for it in soup.select("li.res-list"):
+        a = it.select_one("h3 a")
+        if not a:
+            continue
+        href = a.get("data-mdurl") or a.get("data-url") or a.get("href") or ""
+        if not href.startswith("http") or "so.com" in href:
+            continue
+        snippet = it.select_one("p.res-desc, .res-rich, p")
+        st, cred = _classify(href)
+        hits.append(SearchHit(provider="360", external_id=href, title=a.get_text(" ", strip=True), source_type=st, url=href,
+                              abstract=snippet.get_text(" ", strip=True) if snippet else "", credibility=cred))
+        if len(hits) >= limit:
+            break
+    if not hits:
+        raise RuntimeError("360 无结果")
     return hits
 
 
@@ -96,11 +186,12 @@ def _ddg(query: str, limit: int, region: str, chain=DEFAULT_CHAIN, timelimit: st
     # 这边网络到各引擎时好时坏，按顺序试几种“引擎 + 地区”组合，拿到结果就停。
     rows: list[dict] = []
     last: Exception | None = None
-    # 先走自带的必应解析（直连、带时间筛选）；失败再走 ddgs 的各引擎
-    try:
-        return _bing_html(query, limit, timelimit)
-    except Exception as e:  # noqa: BLE001
-        last = e
+    # 先走自带的解析后端：必应（住宅网络好用）→ 搜狗（服务器上最稳，带一周内筛选）→ 360；都不行再走 ddgs 的各引擎
+    for fn in (lambda: _bing_html(query, limit, timelimit), lambda: _sogou_html(query, limit, timelimit), lambda: _so360_html(query, limit)):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last = e
     for round_ in range(2):  # 整条链都失败再等 2 s 重来一遍（网络抖动多为瞬时）
         for backend, reg, timeout in chain:
             try:

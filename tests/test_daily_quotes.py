@@ -88,7 +88,10 @@ def test_web_market_quotes_keeps_only_fresh_pages(monkeypatch, home):
     rows = D.web_rows("LLDPE")
     assert len(rows) == 1 and rows[0]["quote_date"] == fresh and rows[0]["channel"] == "网查" and rows[0]["trader"].startswith("生意社华东")
     assert rows[0]["landed_price"] == 9380 + D.freight_for("华东")
-    assert all(a["trader"] != rows[0]["trader"] for a in D.apply_cheapest())     # 网查不进价格卡（只会用日报）
+    applied = D.apply_cheapest()
+    assert all(a["trader"] != rows[0]["trader"] for a in applied)               # 网查不进价格卡（只会用日报）
+    for a in applied:                                                            # 还原，避免影响其他测试
+        pricing.undo_last_price(a["code"], "actual")
     # 旧版泛报价（无 family）清理
     sid = D.sourcing.upsert_supplier({"name": "旧网查商家", "kind": "贸易商"})
     db.insert("supplier_quotes", {"supplier_id": sid, "material_code": "LL", "grade": "x", "price": 8000, "unit": "元/吨", "basis": "", "moq": "",
