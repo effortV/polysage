@@ -102,3 +102,18 @@ def test_material_extraction_accepts_market_tables(monkeypatch, home):
     assert [r["supplier"] for r in rows] == ["山东再生PE市场", "青岛聚利新能源科技有限公司"]
     assert rows[0]["kind"] == "行情" and rows[1]["contact"] == "0532-x"
     assert all(r["date"] == today.isoformat() for r in rows)          # 页面没写日期时按当天记
+
+
+def test_quality_filter_drops_unusable_grades(monkeypatch, home):
+    """便宜但用不了的料（大棚膜/发黄/杂色/破碎/注塑）不进库。"""
+    from datetime import date
+
+    MAT.seed_materials()
+    monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
+        {"supplier": "东北再生高压市场", "kind": "行情", "region": "东北", "grade": "白色略发黄大棚膜一级颗粒", "price": 4400, "evidence": "大棚膜料 4400"},
+        {"supplier": "广东再生高压市场", "kind": "行情", "region": "广东", "grade": "高压白透明一级造粒", "price": 6300, "evidence": "白透明一级 6300"},
+        {"supplier": "某某再生厂", "kind": "回收厂", "region": "山东", "grade": "杂色瓶盖破碎料", "price": 4450, "evidence": "破碎 4450"},
+    ]})
+    rows = D.extract_material_quotes("R1", "https://x/1", "正文" * 200, date.today(), "")
+    assert [r["supplier"] for r in rows] == ["广东再生高压市场"] and rows[0]["price"] == 6300
+    assert D._quality_ok("POE", "8150", "")          # 没配过滤词的材料不受影响

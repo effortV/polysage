@@ -494,6 +494,24 @@ MATERIAL_QUERIES: dict[str, tuple[str, list[str]]] = {
 }
 MATERIAL_MAX_AGE_DAYS = 30   # 辅料报价更新慢：一个月内都算有效（主料仍是一周）
 
+# 质量过滤：报价的规格/原文里出现这些词就不要（便宜但不是我们能用的料）
+MATERIAL_AVOID: dict[str, tuple[str, ...]] = {
+    "R1": ("大棚膜", "发黄", "杂色", "黑色", "破碎", "低压", "HDPE", "注塑", "中空", "瓶盖", "打包带"),
+    "RL": ("黑色", "杂色", "破碎", "注塑", "中空", "瓶盖", "打包带", "母粒"),
+    "R2": ("破碎", "注塑", "中空", "瓶盖"),
+    "PCR": ("破碎", "注塑"),
+    "FL": ("PP专用", "注塑"),
+    "AD": ("尼龙", "PA6", "聚邻苯二甲酰胺", "工程塑料"),
+}
+
+
+def _quality_ok(code: str, grade: str, evidence: str) -> bool:
+    """便宜但用不了的料（大棚膜、发黄、杂色、破碎、注塑料…）直接丢。"""
+    bad = MATERIAL_AVOID.get(code) or ()
+    text = f"{grade} {evidence}"
+    return not any(w in text for w in bad)
+
+
 
 def material_queries(code: str, depth: str = "标准") -> list[str]:
     m = MAT.get_material(code) or {}
@@ -527,6 +545,9 @@ def extract_material_quotes(code: str, url: str, text: str, today: _date, page_d
         name = (q.get("supplier") or "").strip()[:60]
         if price is None or not sourcing._valid_supplier(name, q.get("kind") or "未知"):
             dropped += 1
+            continue
+        if not _quality_ok(code, q.get("grade") or "", q.get("evidence") or ""):
+            dropped += 1       # 便宜但用不了的料（大棚膜、发黄、杂色、破碎、注塑料…）
             continue
         date_str = (q.get("date") or "").strip()
         if not _fresh(date_str, today, MATERIAL_MAX_AGE_DAYS):
