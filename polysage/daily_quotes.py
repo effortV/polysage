@@ -457,7 +457,8 @@ MATERIAL_PROMPT = (
     "\"evidence\": \"原文报价句（不超过 60 字）\"}}]}}。\n"
     "要点：1) 1688/阿里类页面的标价是【元/千克】（如 7.30、10.10），换算成元/吨要 ×1000；写明“元/吨”的不用换算。"
     "2) 行情表里写区间（如 5300-5400）取较低值；一行一个品类，不要合并。"
-    "3) 与该材料不同类的品种（别的树脂、别的用途）不要；匿名商家（“供应商 11”）不要。"
+    "3) “同类”指同一品种（再生高压 / 再生线性 / 填充母料 / 加工助剂母粒…），等级或颜色不同（一级、二级、大众料、白色、本色）也算，写进 grade；"
+    "别的树脂、别的用途的不要；匿名商家（“供应商 11”）不要。"
     "4) 最多 12 条，优先价格低、信息全的；确实没有就 quotes=[]。\n\n网页：{url}\n正文：\n{text}"
 )
 
@@ -616,8 +617,7 @@ def web_material_quotes(codes: list[str] | None = None, *, depth: str = "标准"
                 if len(text) < 200:
                     continue
                 pd_ = page.get("date") or ""
-                if pd_ and not _fresh(pd_, today, MATERIAL_MAX_AGE_DAYS * 6):   # 半年前的页面直接丢
-                    continue
+                # 不按页面日期预筛：B2B 商家页的“日期”多是模板日期（1688 常年显示 2019），真实报价靠逐条的 date 字段
                 picked += 1
                 pages.append((h.url, text, pd_))
         sourcing._log(f"[{code}] {m['name']}：{len(pages)} 个页面，开始抽取", echo)
