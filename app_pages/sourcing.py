@@ -7,6 +7,7 @@ from datetime import date
 
 from polysage import activity, daily_quotes, db, forecast, jobs, sourcing, ui
 from polysage.formulation import materials as MAT
+from polysage.formulation import materials as MAT
 
 ui.page_header("供应商寻源", "为每种原料找厂商与报价，和价格卡比较，生成询价清单；询价核实后一键登记为实价。")
 MAT.seed_materials()
@@ -192,6 +193,42 @@ def _render_tab_run() -> None:
     if lr:
         st.caption(f"上次网查：{lr['at'][:16].replace('T', ' ')} · {', '.join(lr['codes'])}")
     _render_web_compare(fams)
+
+    st.divider()
+    st.subheader("辅料与再生料")
+    st.caption("再生料（R1/RL/R2）、助剂母料（AD）、填充母料（FL）、POE/EVA 等不在贸易商日报里，按材料代码网查厂商与报价（近一个月），"
+               "可把最低到厂价写成估计价；询价核实后到「结果」里登记为实价。")
+    codes_all = [c for c in daily_quotes.MATERIAL_QUERIES if MAT.get_material(c)]
+    default_codes = [c for c in ("R1", "RL", "AD") if c in codes_all]
+    mc1, mc2, mc3 = st.columns([3, 1, 1])
+    pick_codes = mc1.multiselect("材料", codes_all, default=default_codes,
+                                 format_func=lambda c: f"{c} · {(MAT.get_material(c) or {}).get('name', c)}")
+    mdepth = mc2.selectbox("深度", ["快", "标准", "深"], index=0, key="mat_depth")
+    apply_est = mc3.checkbox("写成估计价", value=True, help="把每种料的最低到厂价写进价格卡的估计价（不是实价）")
+    if st.button("网查辅料报价", disabled=jobs.is_running() or not pick_codes, key="mat_web"):
+        with st.spinner("检索与抽取中（每种料约 1 分钟）…"):
+            try:
+                summary = daily_quotes.web_material_quotes(pick_codes, depth=mdepth, pages_per_query=2)
+                applied = daily_quotes.apply_web_estimates(pick_codes) if apply_est else []
+                msg = "；".join(f"{c} {s['rows']} 条（新增 {s['new']}）" for c, s in summary.items())
+                if applied:
+                    msg += " | 估计价已更新：" + "，".join(f"{a['code']} → {a['landed']:.0f}" for a in applied)
+                st.success(msg)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"网查失败：{e}")
+        st.rerun()
+    mrows = []
+    for c in codes_all:
+        for i, r in enumerate(daily_quotes.material_rows(c, top=5), 1):
+            cur = MAT.current_prices().get(c, {})
+            cur_p = cur.get("actual") if cur.get("actual") is not None else cur.get("estimate")
+            mrows.append({"代码": c, "材料": (MAT.get_material(c) or {}).get("name", c), "名次": i, "供应商": r["supplier"],
+                          "类型": r["kind"], "地区": r["region"], "规格": r["grade"], "报价": r["price"], "到厂价": r["landed_price"],
+                          "价格卡": cur_p, "起订量": r["moq"], "联系方式": r["contact"], "日期": r["quote_date"], "来源": r["source_url"]})
+    if mrows:
+        st.dataframe(pd.DataFrame(mrows), hide_index=True, column_config={"来源": st.column_config.LinkColumn()}, **ui.WIDE)
+    else:
+        st.info("辅料还没有网查报价；选好材料点“网查辅料报价”。")
 
 
 def _render_web_compare(fams: list[str]) -> None:

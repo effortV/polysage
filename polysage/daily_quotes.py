@@ -329,7 +329,7 @@ def web_queries(family: str, depth: str = "标准") -> list[str]:
     return list(dict.fromkeys(qs))[:n]
 
 
-def _fresh(date_str: str, today: _date) -> bool:
+def _fresh(date_str: str, today: _date, max_age: int | None = None) -> bool:
     m = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", date_str or "")
     if not m:
         return False
@@ -337,7 +337,7 @@ def _fresh(date_str: str, today: _date) -> bool:
         d = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
     except ValueError:
         return False
-    return 0 <= (today - d).days <= WEB_MAX_AGE_DAYS
+    return 0 <= (today - d).days <= (max_age or WEB_MAX_AGE_DAYS)
 
 
 def extract_web_quotes(family: str, url: str, text: str, today: _date, page_date: str = "") -> list[dict[str, Any]]:
@@ -443,3 +443,212 @@ def purge_old_web_quotes() -> dict[str, int]:
     n_s = db.q1("SELECT COUNT(*) AS n FROM suppliers WHERE id NOT IN (SELECT DISTINCT supplier_id FROM supplier_quotes) AND status NOT IN ('日报','手动','已合作','已报价')")["n"]
     db.execute("DELETE FROM suppliers WHERE id NOT IN (SELECT DISTINCT supplier_id FROM supplier_quotes) AND status NOT IN ('日报','手动','已合作','已报价')")
     return {"quotes": n_q, "suppliers": n_s}
+
+
+# ---------------- 辅料 / 再生料网查（按材料代码，不是树脂大类） ----------------
+
+MATERIAL_PROMPT = (
+    "下面是一个塑料原料供应/报价网页的正文。请把其中【{name}】（{hint}）的供应商报价拆成结构化行。输出 JSON："
+    "{{\"quotes\": [{{\"supplier\": \"厂商/店铺名称\", \"kind\": \"生产商|回收厂|贸易商|平台商家|行情|未知\", \"region\": \"省/市\", "
+    "\"grade\": \"牌号/规格/等级（如 一级透明、VA 18%、PPA 母粒）\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
+    "\"moq\": \"起订量\", \"contact\": \"页面上的电话/联系人，没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写留空\", "
+    "\"evidence\": \"原文报价句（不超过 60 字）\"}}]}}。"
+    "只要人民币报价，元/kg 换算成元/吨（×1000）；与该材料不同类的（别的牌号/别的品种）不要；匿名商家（“供应商 11”）不要；"
+    "最多 12 条，优先价格低、信息全的；找不到就 quotes=[]。\n\n网页：{url}\n正文：\n{text}"
+)
+
+# 非主料的检索词与说明；主料（LL/LLC/LD/HD/mLL）走贸易商日报与大类网查
+MATERIAL_QUERIES: dict[str, tuple[str, list[str]]] = {
+    "R1": ("再生高压一级透明 PE 颗粒，吹膜用", ["再生高压一级透明料 颗粒 厂家 报价", "再生LDPE 一级 透明 颗粒 价格 吹膜", "site:1688.com 再生高压 一级 透明 颗粒"]),
+    "R2": ("再生高压二级 PE 颗粒", ["再生高压二级料 颗粒 价格 厂家", "再生LDPE 二级料 报价"]),
+    "RL": ("再生线性一级料（工业膜回料造粒）", ["再生线性 LLDPE 一级 颗粒 厂家 报价", "工业膜 回料 造粒 线性 价格", "site:1688.com 再生线性 一级 颗粒"]),
+    "PCR": ("混合 PE 消费后回料造粒 PCR", ["PCR PE 再生颗粒 价格 厂家", "消费后回收 聚乙烯 造粒 报价"]),
+    "RHD": ("再生 HDPE 颗粒", ["再生HDPE 颗粒 价格 厂家", "再生高密度聚乙烯 颗粒 报价"]),
+    "SC": ("自有边角料回粒（厂内回收，通常不外购）", ["薄膜 边角料 回粒 加工 价格"]),
+    "POE": ("POE 乙烯-辛烯共聚弹性体（Engage 8150/8200 类）", ["POE 8150 价格 报价 厂家", "POE 弹性体 8200 现货 报价", "陶氏 POE 8150 华东 价格"]),
+    "POP": ("POP 塑性体（Versify/Affinity 类）", ["POP 塑性体 聚烯烃 价格 报价"]),
+    "VL": ("VLDPE / ULDPE 超低密度聚乙烯", ["VLDPE 超低密度聚乙烯 价格 报价", "ULDPE 现货 报价"]),
+    "EVA": ("EVA 膜级，VA 5～9%", ["EVA 14-2 价格 报价 膜级", "EVA VA含量 6% 吹膜 价格 厂家"]),
+    "EMA": ("EMA / EBA 丙烯酸酯共聚物", ["EMA 共聚物 价格 报价", "EBA 树脂 现货 价格"]),
+    "OBC": ("OBC 烯烃嵌段共聚物（Infuse 类）", ["OBC Infuse 9107 价格 报价"]),
+    "ION": ("离聚物 / EAA", ["离聚物 Surlyn 价格 报价", "EAA 树脂 价格"]),
+    "FL": ("CaCO₃ 填充母料（碳酸钙含量 80%）", ["碳酸钙填充母料 80% 价格 厂家 吹膜", "site:1688.com 填充母料 碳酸钙 吹膜"]),
+    "TFL": ("透明填充母料（细粒径 CaCO₃/BaSO₄）", ["透明填充母料 价格 厂家 吹膜"]),
+    "TALC": ("滑石粉母料", ["滑石粉母料 价格 厂家"]),
+    "AD": ("功能助剂母料：PPA 加工助剂 + 抗氧剂", ["PPA 加工助剂母粒 价格 厂家", "聚乙烯 抗氧剂母粒 价格 报价"]),
+    "CP": ("相容剂 MAH-g-PE 马来酸酐接枝", ["马来酸酐接枝 PE 相容剂 价格 厂家"]),
+    "NUC": ("PE 用成核 / 透明剂", ["聚乙烯 成核剂 透明剂 价格 厂家"]),
+    "ADR": ("扩链剂（ADR / BASF Joncryl 类）", ["扩链剂 ADR 4368 价格 报价", "Joncryl 扩链剂 价格"]),
+    "MD": ("MDPE 膜料", ["MDPE 膜料 价格 报价 华东"]),
+    "LL6": ("C6 己烯共聚 LLDPE", ["己烯 LLDPE 价格 报价 华东"]),
+    "mLL8": ("茂金属 C8 LLDPE（Elite 5400 类）", ["Elite 5400 价格 报价", "茂金属聚乙烯 C8 价格 华东"]),
+}
+MATERIAL_MAX_AGE_DAYS = 30   # 辅料报价更新慢：一个月内都算有效（主料仍是一周）
+
+
+def material_queries(code: str, depth: str = "标准") -> list[str]:
+    m = MAT.get_material(code) or {}
+    hint, qs = MATERIAL_QUERIES.get(code, ("", []))
+    if not qs:
+        name = re.sub(r"[（(].*?[)）]", "", m.get("name") or code).strip()
+        qs = [f"{name} 价格 厂家 报价", f"{name} 供应商 现货 报价"]
+    n = {"快": 2, "标准": 3, "深": 5}.get(depth, 3)
+    return qs[:n]
+
+
+def extract_material_quotes(code: str, url: str, text: str, today: _date, page_date: str = "") -> list[dict[str, Any]]:
+    m = MAT.get_material(code) or {"name": code}
+    hint = MATERIAL_QUERIES.get(code, ("", []))[0] or (m.get("role") or "")
+    try:
+        data = llm.chat_json([{"role": "system", "content": "你是塑料原料采购助理，输出严格 JSON。"},
+                              {"role": "user", "content": MATERIAL_PROMPT.format(name=m.get("name", code), hint=hint, url=url, text=text[:8000])}],
+                             max_tokens=3000)
+    except Exception as e:  # noqa: BLE001
+        sourcing._log(f"[{code}] 抽取失败 {url[:50]}：{e}")
+        return []
+    freight = load_freight()
+    host = urlparse(url).netloc.replace("www.", "")
+    out = []
+    for q in (data.get("quotes") if isinstance(data, dict) else None) or []:
+        price = _to_price_any(q.get("price"))
+        name = (q.get("supplier") or "").strip()[:60]
+        if price is None or not sourcing._valid_supplier(name, q.get("kind") or "未知"):
+            continue
+        date_str = (q.get("date") or "").strip()
+        if not _fresh(date_str, today, MATERIAL_MAX_AGE_DAYS):
+            date_str = page_date
+        if not _fresh(date_str, today, MATERIAL_MAX_AGE_DAYS):
+            date_str = today.isoformat()   # 辅料页面多为长期挂牌，没日期按当天记，可信度低一档
+        region = (q.get("region") or "").strip()[:30]
+        fr = freight_for(region, freight)
+        out.append({"code": code, "supplier": name, "kind": q.get("kind") if q.get("kind") in KINDS_MAT else "未知", "region": region,
+                    "grade": (q.get("grade") or "").strip()[:40], "price": price, "tax_included": bool(q.get("tax_included", True)),
+                    "moq": (q.get("moq") or "").strip()[:30], "contact": (q.get("contact") or "").strip()[:60],
+                    "date": re.sub(r"[/.年月]", "-", date_str).rstrip("日-")[:10], "freight": fr, "landed": price + fr,
+                    "evidence": (q.get("evidence") or "").strip()[:120], "url": url, "host": host})
+    return out
+
+
+KINDS_MAT = ["生产商", "回收厂", "贸易商", "平台商家", "行情", "未知"]
+
+
+def _to_price_any(v: Any) -> float | None:
+    """辅料价格跨度大（回料 4000 到助剂 8 万），只做元/kg 换算与合理区间校验。"""
+    try:
+        p = float(re.sub(r"[^\d.]", "", str(v)))
+    except (TypeError, ValueError):
+        return None
+    if p < 100:
+        p *= 1000
+    return p if 300 <= p <= 300000 else None
+
+
+def save_material_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    n_new = n_dup = 0
+    for r in rows:
+        sid = sourcing.upsert_supplier({"name": r["supplier"], "kind": r["kind"], "region": r["region"], "contact": r["contact"],
+                                        "url": r["url"], "materials": r["code"], "credibility": 3, "status": "网查"})
+        dup = db.q1("SELECT id FROM supplier_quotes WHERE supplier_id=? AND material_code=? AND price=? AND IFNULL(grade,'')=?",
+                    (sid, r["code"], r["price"], r["grade"]))
+        if dup:
+            n_dup += 1
+            continue
+        db.insert("supplier_quotes", {
+            "supplier_id": sid, "material_code": r["code"], "grade": r["grade"], "price": r["price"], "unit": "元/吨",
+            "basis": ("含税" if r["tax_included"] else "不含税"), "moq": r["moq"], "quote_date": r["date"], "source_url": r["url"],
+            "evidence": r["evidence"], "credibility": 3, "status": "网查", "in_rfq": 0, "actual_price": None, "note": "",
+            "created_at": db.now(), "family": None, "producer": "", "warehouse": r["region"], "delivery": "",
+            "landed_price": r["landed"], "channel": "网查",
+        })
+        n_new += 1
+    return {"new": n_new, "dup": n_dup}
+
+
+def web_material_quotes(codes: list[str] | None = None, *, depth: str = "标准", pages_per_query: int = 3,
+                        echo: Any = None) -> dict[str, Any]:
+    """辅料 / 再生料按材料代码网查厂商与报价（同样折到厂价），入库 channel=网查。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .sources.fetch import fetch_url
+    from .sources.websearch import search as web_search
+
+    codes = codes or [c for c in MATERIAL_QUERIES if (MAT.get_material(c) or {}).get("active", 1)]
+    today = _date.today()
+    summary: dict[str, Any] = {}
+    activity.note(f"辅料寻源：{'、'.join(codes)}")
+    for code in codes:
+        m = MAT.get_material(code)
+        if not m:
+            continue
+        seen: set[str] = set()
+        pages: list[tuple[str, str, str]] = []
+        for q in material_queries(code, depth):
+            try:
+                hits = web_search(q, limit=8, bing_first=True, timelimit="m")
+            except Exception as e:  # noqa: BLE001
+                sourcing._log(f"[{code}] 搜索失败「{q}」：{str(e)[:80]}", echo)
+                continue
+            picked = 0
+            for h in hits:
+                if picked >= pages_per_query or not h.url or h.url in seen:
+                    continue
+                seen.add(h.url)
+                try:
+                    page = fetch_url(h.url)
+                except Exception:  # noqa: BLE001
+                    continue
+                text = page.get("text") or ""
+                if len(text) < 200:
+                    continue
+                pd_ = page.get("date") or ""
+                if pd_ and not _fresh(pd_, today, MATERIAL_MAX_AGE_DAYS * 6):   # 半年前的页面直接丢
+                    continue
+                picked += 1
+                pages.append((h.url, text, pd_))
+        sourcing._log(f"[{code}] {m['name']}：{len(pages)} 个页面，开始抽取", echo)
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            results = list(ex.map(lambda p: extract_material_quotes(code, p[0], p[1], today, p[2]), pages))
+        rows = [r for rs in results for r in rs]
+        saved = save_material_rows(rows)
+        best = min(rows, key=lambda r: r["landed"]) if rows else None
+        cur = MAT.current_prices().get(code, {})
+        cur_price = cur.get("actual") if cur.get("actual") is not None else cur.get("estimate")
+        sourcing._log(f"[{code}] 完成：{len(rows)} 条报价，新增 {saved['new']}" +
+                      (f"，最低到厂 {best['landed']:.0f}（{best['supplier'][:14]}，{best['region'] or '地区不详'}）"
+                       f"，价格卡 {cur_price:.0f}" if best and cur_price else ""), echo)
+        summary[code] = {"name": m["name"], "pages": len(pages), "rows": len(rows), **saved, "best": best, "current": cur_price}
+    db.insert("sourcing_runs", {"at": db.now(), "codes_json": db.dumps(codes),
+                                "summary_json": db.dumps({k: {kk: vv for kk, vv in v.items() if kk != "best"} for k, v in summary.items()}),
+                                "note": f"辅料网查 depth={depth}"})
+    return summary
+
+
+def material_rows(code: str, days: int = MATERIAL_MAX_AGE_DAYS, top: int = 8) -> list[dict[str, Any]]:
+    import datetime as _dt
+
+    since = (_date.today() - _dt.timedelta(days=days)).isoformat()
+    rows = db.q("SELECT q.*, s.name AS supplier, s.kind, s.region, s.contact FROM supplier_quotes q JOIN suppliers s ON s.id=q.supplier_id "
+                "WHERE q.material_code=? AND q.channel='网查' AND q.quote_date>=? AND q.status!='不可信' AND q.family IS NULL "
+                "ORDER BY q.landed_price ASC, q.id DESC", (code, since))
+    return rows[:top]
+
+
+def apply_web_estimates(codes: list[str] | None = None) -> list[dict[str, Any]]:
+    """把辅料网查的最低到厂价写成估计价（estimate，不是实价）；有实价的材料跳过。"""
+    out = []
+    for code in (codes or list(MATERIAL_QUERIES)):
+        rows = material_rows(code, top=1)
+        if not rows:
+            continue
+        cur = MAT.current_prices().get(code, {})
+        if cur.get("actual") is not None:
+            continue
+        landed = float(rows[0]["landed_price"])
+        if cur.get("estimate") is not None and abs(cur["estimate"] - landed) < 1:
+            continue
+        pricing.record_price(code, landed, "estimate", supplier=rows[0]["supplier"], price_date=rows[0]["quote_date"],
+                             url=rows[0]["source_url"] or "",
+                             source=f"网查最低到厂价：{rows[0]['supplier']}（{rows[0]['region'] or '地区不详'}）{rows[0]['price']:.0f} + 运费",
+                             note="辅料网查，未询价核实")
+        out.append({"code": code, "landed": landed, "supplier": rows[0]["supplier"]})
+    return out

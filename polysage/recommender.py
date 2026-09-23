@@ -298,7 +298,19 @@ def export(out: dict[str, Any], stem: str | None = None) -> list[Path]:
     js = KB["formulation"] / f"{stem}.json"
     js.write_text(json.dumps(out, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     inq = X.inquiry_list(out["schemes"], path=KB["price"] / "询价清单.xlsx") if out["schemes"] else None
-    return [xlsx, js] + ([inq] if inq else [])
+    paths = [xlsx, js] + ([inq] if inq else [])
+    if out.get("schemes"):
+        # 第 1 名方案的采购清单：每种料买谁家、什么价、怎么联系
+        from . import procurement
+
+        try:
+            p = procurement.plan(out["schemes"][0].get("components") or {}, 1.0, name=f"第 1 名 · {out['schemes'][0].get('formula')}")
+            paths.append(procurement.export(p, KB["price"] / f"采购清单_{stem}.xlsx"))
+            out["procurement"] = {"total": p["total"], "cost_per_ton": p["cost_per_ton"], "missing": p["missing"],
+                                  "items": [{k: v for k, v in it.items() if k != "alternatives"} for it in p["items"]]}
+        except Exception:  # noqa: BLE001
+            pass
+    return paths
 
 
 def last_runs(limit: int = 10) -> list[dict[str, Any]]:

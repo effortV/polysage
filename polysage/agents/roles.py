@@ -50,7 +50,11 @@ ADVISOR_PROTOCOL = (
     "7) 用户报现用膜实测（4 个数：拉伸、撕裂、穿刺、热封强度；若给了 MD/TD 取平均）→ set_base 登记；用户要撤销某条价格 → undo_price；"
     "用户要试某个方案 → scheme_trial_kit 生成称料单与数据表模板。\n"
     "8) 配方库：recommend_schemes 出的方案会自动存入配方库（来源“对话推荐”）并返回编号；用户自己报一个配方（如 LL 50 / R1 45 / AD 5）"
-    "想存起来 → save_formulation（组分合计 100%，写清 rationale 与 risks）；用户问库里有哪些 → list_formulations。"
+    "想存起来 → save_formulation（组分合计 100%，写清 rationale 与 risks）；用户问库里有哪些 → list_formulations。\n"
+    "9) **每次给出方案后，回复的最后必须有两段**：（a）“导出”——列出本次生成的文件（方案表 xlsx、采购清单 xlsx、配方库编号）；"
+    "（b）“怎么进货”——对推荐的第 1 个方案调 procurement_plan，把每种料（含再生料 R1/RL、助剂母料 AD 等）买谁家、到厂价、联系方式、"
+    "用量与小计、合计元/吨列出来；某种料没有供应商或没有价格时，调 find_material_suppliers 现查一次，仍没有就写“待询价”并说明该找哪类供应商。"
+    "网查价要注明“未询价核实”。"
 )
 
 ROLES: dict[str, Role] = {
@@ -58,7 +62,7 @@ ROLES: dict[str, Role] = {
         key="advisor", name="配方推荐助手",
         persona="你是膜方智能体，负责“材料 + 价格 → 最优组合方案”，价格变了方案跟着变。",
         duty=ADVISOR_PROTOCOL,
-        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks", "price_outlook",
+        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks", "price_outlook", "procurement_plan", "find_material_suppliers",
                "price_report", "set_base", "get_base", "scheme_trial_kit", "compute_cost", "check_constraints", "list_formulations", "save_formulation", "predict_performance",
                "kb_search", "web_search"],
     ),

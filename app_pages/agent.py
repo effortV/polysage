@@ -132,6 +132,33 @@ def _render_tab_out() -> None:
             if pp.exists():
                 st.download_button(pp.name, pp.read_bytes(), file_name=pp.name, key=f"dl_agent_{pp.name}")
 
+        st.markdown("##### 采购方案（怎么进货）")
+        from polysage import procurement
+
+        pc1, pc2 = st.columns([1, 1])
+        rank = pc1.selectbox("方案", [r["rank"] for r in out["schemes"]], format_func=lambda i: f"第 {i} 名", key="proc_rank")
+        tons = pc2.number_input("批量（吨成品）", min_value=0.1, value=1.0, step=0.5, key="proc_tons")
+        plan = procurement.plan_for_scheme(int(rank), float(tons))
+        if not plan:
+            st.caption("取不到该方案的组分。")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "代码": it["code"], "材料": it["name"], "比例%": it["pct"], "用量(吨)": it["qty_t"],
+                "到厂价(元/吨)": it["price"], "来源": procurement.TIER_LABEL.get(it["tier"], it["tier"]),
+                "供应商/报价商": it["supplier"], "规格": it["grade"], "地区": it["region"], "交期": it["delivery"],
+                "起订量": it["moq"], "联系方式": it["contact"], "报价日期": it["date"], "小计(元)": it["subtotal"],
+            } for it in plan["items"]]), hide_index=True, **ui.WIDE)
+            if plan["total"] is not None:
+                st.caption(f"合计 {plan['total']:,} 元，折合 {plan['cost_per_ton']:,} 元/吨（到厂含税口径）。网查价未经询价核实，下单前电话确认。")
+            if plan["missing"]:
+                st.warning("缺价格：" + "、".join(plan["missing"]) + "——到「供应商与报价 → 网查对照 → 辅料与再生料」网查，或直接询价登记。")
+            if st.button("导出采购清单 xlsx", key="proc_export"):
+                path = procurement.export(plan)
+                st.session_state["proc_path"] = str(path)
+            pth = st.session_state.get("proc_path")
+            if pth and Path(pth).exists():
+                st.download_button("下载采购清单", Path(pth).read_bytes(), file_name=Path(pth).name, key="dl_proc")
+
 def _render_tab_scr() -> None:
     import pandas as pd
 

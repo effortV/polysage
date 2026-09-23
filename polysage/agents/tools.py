@@ -380,6 +380,49 @@ def price_outlook(refresh: bool = False):
     return text, []
 
 
+@tool("procurement_plan", "给出某个方案/配方的采购方案：每种料（含再生料、助剂、母料）买谁家、到厂价多少、联系方式、用量与小计，并导出采购清单 xlsx。",
+      {"rank": {"type": "integer", "description": "最近一次推荐里的方案排名，默认 1"},
+       "formulation_code": {"type": "string", "description": "或配方库编号，如 A03、G01"},
+       "components": {"type": "object", "additionalProperties": {"type": "number"}, "description": "或直接给组分，如 {\"LL\": 35, \"R1\": 44, \"RL\": 20, \"AD\": 1}"},
+       "tons": {"type": "number", "description": "批量（吨成品），默认 1"}})
+def procurement_plan(rank: int = 1, formulation_code: str = "", components: dict | None = None, tons: float = 1.0):
+    from .. import procurement
+    from ..config import KB
+
+    if components:
+        p = procurement.plan({k: float(v) for k, v in components.items()}, tons)
+    elif formulation_code:
+        p = procurement.plan_for_code(formulation_code, tons)
+    else:
+        p = procurement.plan_for_scheme(rank, tons)
+    if not p:
+        return "没有找到对应的方案/配方（先 recommend_schemes 或给 components）。", []
+    path = procurement.export(p, KB["price"] / "采购清单.xlsx")
+    return procurement.text(p) + f"\n采购清单已导出：{path}", []
+
+
+@tool("find_material_suppliers", "为再生料 / 助剂 / 母料等辅料按材料代码网查厂商与报价（R1、RL、R2、AD、POE、EVA、FL 等），入库后返回最低几家；可选把最低价写成估计价。",
+      {"codes": {"type": "array", "items": {"type": "string"}, "description": "材料代码，如 [\"R1\", \"RL\", \"AD\"]"},
+       "depth": {"type": "string", "enum": ["快", "标准", "深"]},
+       "apply_estimate": {"type": "boolean", "description": "是否把最低到厂价写成估计价（默认 true）"}}, ["codes"])
+def find_material_suppliers(codes: list[str], depth: str = "快", apply_estimate: bool = True):
+    from .. import daily_quotes
+
+    summary = daily_quotes.web_material_quotes(codes, depth=depth, pages_per_query=2)
+    applied = daily_quotes.apply_web_estimates(codes) if apply_estimate else []
+    lines = []
+    for code, s in summary.items():
+        lines.append(f"{code} {s['name']}：{s['rows']} 条报价（新增 {s['new']}）" +
+                     (f"，最低到厂 {s['best']['landed']:.0f}（{s['best']['supplier'][:16]}，{s['best']['region'] or '地区不详'}"
+                      + (f"，电话 {s['best']['contact']}" if s['best'].get('contact') else "") + "）" if s.get("best") else "，未找到报价"))
+        for r in daily_quotes.material_rows(code, top=3)[1:]:
+            lines.append(f"    备选：{r['supplier'][:16]} {r['landed_price']:.0f}（{r['region'] or '地区不详'}"
+                         + (f"，{r['contact']}" if r.get("contact") else "") + "）")
+    if applied:
+        lines.append("已更新估计价：" + "；".join(f"{a['code']} → {a['landed']:.0f}" for a in applied) + "（网查价，未询价核实）")
+    return "\n".join(lines) or "没有结果。", []
+
+
 @tool("daily_picks", "查看最近一次贸易商日报里每类树脂（LLDPE/LDPE/HDPE）的最低到厂价与次选。", {})
 def daily_picks():
     from .. import daily_quotes
