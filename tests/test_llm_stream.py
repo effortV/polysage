@@ -116,3 +116,38 @@ def test_stream_retries_on_ssl_eof_then_falls_back_to_non_stream(monkeypatch):
     assert llm.chat_json([{"role": "user", "content": "x"}]) == {"ok": 1}
     assert attempts == ["stream", "stream", "stream", "raw"]
     assert any("模型请求重试" in e["label"] for e in llm.activity.snapshot()["events"])
+
+
+def test_chat_answer_falls_back_when_empty(monkeypatch):
+    """模型空手而回：先换问法，再换另一个模型，最后也要给可读提示。"""
+    monkeypatch.setattr(settings, "sf_api_key", "fake")
+    monkeypatch.setattr(settings, "zju_api_key", "fake")
+    monkeypatch.setattr(settings, "llm_profile", "zju")
+    seen: list[tuple[str, int]] = []
+
+    def fake_chat(messages, **kw):
+        seen.append((settings.llm_profile, len(messages)))
+        if settings.llm_profile == "zju":
+            return llm.ChatResult(content="")                    # ZJU 一直空
+        return llm.ChatResult(content="这是备用模型给出的结论。")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    res = llm.chat_answer([{"role": "user", "content": "出方案"}], tools=[{"x": 1}], max_tokens=1000)
+    assert "备用模型" in res.content and "结论" in res.content
+    assert [p for p, _ in seen] == ["zju", "zju", "siliconflow"]
+    assert settings.llm_profile == "zju"                          # 用完要还原
+
+    monkeypatch.setattr(llm, "chat", lambda messages, **kw: llm.ChatResult(content=""))
+    assert "连续返回空内容" in llm.chat_answer([{"role": "user", "content": "x"}]).content
+
+
+def test_reasoning_is_not_used_as_answer(monkeypatch):
+    """模型只给了内部思考（reasoning_content）时，不能当成答案返回。"""
+    monkeypatch.setattr(settings, "sf_api_key", "fake")
+    monkeypatch.setattr(settings, "llm_profile", "siliconflow")
+    monkeypatch.setattr(llm, "_post_stream", lambda payload, **kw: {
+        "choices": [{"message": {"content": "", "reasoning_content": "Hmm, let me think about this..."}, "finish_reason": "stop"}]})
+    monkeypatch.setattr(llm, "_post", lambda *a, **kw: {
+        "choices": [{"message": {"content": "", "reasoning_content": "Hmm..."}, "finish_reason": "stop"}]})
+    res = llm.chat([{"role": "user", "content": "出方案"}], max_tokens=500)
+    assert res.content == "" and "Hmm" not in res.content

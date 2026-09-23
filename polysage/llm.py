@@ -226,7 +226,8 @@ def chat(
                     json_mode=json_mode, model=model, thinking=False, stream=stream, _retry=False)
         if res2.content.strip() or res2.tool_calls:
             return res2
-        msg = {**msg, "content": (msg.get("reasoning_content") or msg.get("reasoning") or "")}
+        # 注意：不要把 reasoning_content 当答案返回——那是模型的内部草稿（"Hmm, let me think..."），
+        # 直接显示给用户就是一坨思考过程。保留在 raw 里供排查，content 仍为空，交给上层 chat_answer 换模型。
     tool_calls = []
     for tc in msg.get("tool_calls") or []:
         fn = tc.get("function") or {}
@@ -243,6 +244,45 @@ def chat(
         usage=data.get("usage") or {},
         raw=data,
     )
+
+
+def other_profile() -> str | None:
+    """另一个配好的对话模型（siliconflow ↔ zju），没有就 None。"""
+    cur = settings.llm_profile
+    other = "zju" if cur == "siliconflow" else "siliconflow"
+    key = settings.zju_api_key if other == "zju" else settings.sf_api_key
+    return other if key else None
+
+
+def chat_answer(messages: list[dict[str, Any]], **kw: Any) -> ChatResult:
+    """要一个“有内容的回答”：当前模型空手而回时换一种问法，再不行换另一个模型。
+
+    ZJU（vLLM）偶尔会在工具调用之后返回空 content，直接显示给用户就是“没有输出”。
+    """
+    res = chat(messages, **kw)
+    if res.content.strip():
+        return res
+    nudge = list(messages) + [{"role": "system", "content": "上一次没有输出内容。现在不要调用工具，直接用中文给出完整结论。"}]
+    kw2 = {k: v for k, v in kw.items() if k not in ("tools", "tool_choice")}
+    kw2["thinking"] = False
+    res = chat(nudge, **kw2)
+    if res.content.strip():
+        return res
+    other = other_profile()
+    if other:
+        cur = settings.llm_profile
+        try:
+            settings.llm_profile = other
+            res2 = chat(nudge, **kw2)
+        except Exception as e:  # noqa: BLE001
+            res2 = ChatResult(content=f"（备用模型 {other} 也失败：{str(e)[:120]}）")
+        finally:
+            settings.llm_profile = cur
+        if res2.content.strip():
+            res2.content += f"\n\n（本条由备用模型 {other} 作答：当前模型连续返回空内容）"
+            return res2
+    return ChatResult(content="（模型连续返回空内容：已换问法与备用模型重试仍无输出。可在「设置」页切换对话模型，"
+                              "或把问题拆小一点再问一次。）")
 
 
 def chat_stream(messages: list[dict[str, Any]], *, temperature: float = 0.3, max_tokens: int = 4096,

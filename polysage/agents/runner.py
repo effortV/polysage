@@ -13,10 +13,13 @@ from .. import activity, db, kb, llm
 from . import tools as T
 from .roles import ROLES, system_prompt
 
-MAX_HISTORY_CHARS = 60000
+MAX_HISTORY_CHARS = 40000
 # 每轮对话里同一工具的调用上限（防止模型在检索上打转）
 TOOL_CALL_CAPS = {"web_search": 3, "literature_search": 2, "patent_search": 2, "fetch_url": 3, "kb_search": 4,
-                  "recommend_schemes": 2, "compute_cost": 6}
+                  "recommend_schemes": 2, "compute_cost": 6, "list_materials": 2, "list_formulations": 2,
+                  "price_report": 2, "daily_picks": 2, "price_outlook": 2, "procurement_plan": 3,
+                  "find_material_suppliers": 2, "find_suppliers": 2, "supplier_quotes": 3, "get_base": 2,
+                  "screen_materials": 2, "explain_scheme": 4}
 
 
 # ---------- 会话 ----------
@@ -68,6 +71,18 @@ def _add(session_id: int, role: str, content: str | None, **extra: Any) -> int:
     return mid
 
 
+MAX_TOOL_CHARS = 6000
+
+
+def _clip_tool(text: str) -> str:
+    """工具结果太长会把模型的回答挤没：超长时留头留尾，中间标明省略。"""
+    text = text or ""
+    if len(text) <= MAX_TOOL_CHARS:
+        return text
+    head, tail = text[: MAX_TOOL_CHARS - 1200], text[-1000:]
+    return f"{head}\n…（结果过长，中间省略 {len(text) - MAX_TOOL_CHARS + 200} 字；完整内容见对应页面）…\n{tail}"
+
+
 def _to_api(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """数据库消息 → OpenAI 格式；超长时从最早的开始丢弃（保留最近的）。"""
     out: list[dict[str, Any]] = []
@@ -110,7 +125,7 @@ def chat(session_id: int, user_text: str, *, max_steps: int = 8,
     calls: dict[str, int] = {}
     while True:
         history = _to_api(messages(session_id))
-        res = llm.chat([sys_msg, *history], tools=T.schemas(role.tools), tool_choice="auto", temperature=0.3, max_tokens=4096, thinking=2048)
+        res = llm.chat([sys_msg, *history], tools=T.schemas(role.tools), tool_choice="auto", temperature=0.3, max_tokens=4096, thinking=False)
         if res.tool_calls and steps < max_steps:
             _add(session_id, "assistant", res.content or "", tool_calls=res.tool_calls)
             for tc in res.tool_calls:
@@ -125,7 +140,7 @@ def chat(session_id: int, user_text: str, *, max_steps: int = 8,
                 else:
                     text, cits = T.run(tc["name"], tc["arguments"])
                 citations.extend(c for c in cits if c["source_id"] not in {x["source_id"] for x in citations})
-                _add(session_id, "tool", text[:20000], tool_call_id=tc["id"], name=tc["name"])
+                _add(session_id, "tool", _clip_tool(text), tool_call_id=tc["id"], name=tc["name"])
                 if on_event:
                     on_event("tool_result", {"name": tc["name"], "text": text})
             steps += 1
@@ -136,8 +151,11 @@ def chat(session_id: int, user_text: str, *, max_steps: int = 8,
             for tc in res.tool_calls:
                 _add(session_id, "tool", "（已达到本轮工具调用上限，未执行）请基于已有信息直接回答。", tool_call_id=tc["id"], name=tc["name"])
             history = _to_api(messages(session_id))
-            res = llm.chat([sys_msg, *history, {"role": "system", "content": "工具调用已达上限。现在不要再调用工具，直接给出结论；证据不足处写明“待验证/经验判断”。"}],
-                           temperature=0.3, max_tokens=3000, thinking=1024)
+            res = llm.chat_answer([sys_msg, *history, {"role": "system", "content": "工具调用已达上限。现在不要再调用工具，直接给出结论；证据不足处写明“待验证/经验判断”。"}],
+                                  temperature=0.3, max_tokens=3000, thinking=False)
+        if not (res.content or "").strip():
+            # 模型调完工具后空手而回：换问法/换模型再要一次结论
+            res = llm.chat_answer([sys_msg, *history], temperature=0.3, max_tokens=4096, thinking=False)
         content = res.content or "（模型未返回内容）"
         _add(session_id, "assistant", content, citations=citations)
         if on_event:
@@ -152,7 +170,7 @@ def summarize_session(session_id: int) -> str:
     res = llm.chat([
         {"role": "system", "content": "你是项目记录员。把下面的对话整理成“当前状态摘要”，固定标题：已确认的约束与事实 / 已排除的方案与原因 / 待办与下一步 / 未决问题。只保留结论，标注依据编号，不超过 600 字。"},
         {"role": "user", "content": text or "（空对话）"},
-    ], temperature=0.2, thinking=1024)
+    ], temperature=0.2, thinking=False)
     db.update("sessions", session_id, {"summary": res.content, "updated_at": db.now()})
     kb.write_text(kb.PROJECT_FILES["summary"], res.content + f"\n\n（来自会话 #{session_id}，{db.now()}）\n")
     return res.content

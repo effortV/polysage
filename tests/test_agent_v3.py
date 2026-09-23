@@ -83,3 +83,17 @@ def test_recycled_batches():
                                   "ash": 0.2, "gel_count": 30, "price": 7900, "received_at": "2026-09-16"})
     assert rid and MAT.list_recycled_batches("R1")[0]["batch_no"] == "B1"
     assert (MAT.KB["material"] / "再生料批次记录.csv").exists()
+
+
+def test_tool_result_clipping_and_caps():
+    """工具结果过长会把回答挤没：留头留尾并标明省略；常用工具都有调用上限。"""
+    from polysage.agents.runner import MAX_TOOL_CHARS, TOOL_CALL_CAPS, _clip_tool
+
+    short = "只有一点点"
+    assert _clip_tool(short) == short
+    long_text = "甲" * 30000
+    clipped = _clip_tool(long_text)
+    assert len(clipped) < MAX_TOOL_CHARS + 200 and "省略" in clipped
+    assert clipped.startswith("甲") and clipped.endswith("甲")
+    for name in ("list_materials", "recommend_schemes", "procurement_plan", "price_outlook"):
+        assert TOOL_CALL_CAPS.get(name)
