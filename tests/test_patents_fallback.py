@@ -65,3 +65,13 @@ def test_bing_html_parser(monkeypatch):
     hits = W._bing_html("浙石化7042 报价", 8, "w")
     assert [h.url for h in hits] == ["https://www.sohu.com/a/1", "https://s.plasway.com/price/x.html"]
     assert hits[0].abstract.startswith("浙石化7042") and "ez2" in seen["url"] and "cn.bing.com" in seen["url"]
+
+
+def test_fetch_decodes_gbk_pages():
+    from polysage.sources.fetch import _decode
+
+    body = "再生高压一级透明料 7400 元/吨".encode("gb18030")
+    assert _decode(body, "text/html; charset=gbk") == "再生高压一级透明料 7400 元/吨"
+    assert "再生高压" in _decode(b'<meta charset="gb2312">' + body, "text/html")
+    assert _decode(body, "") == "再生高压一级透明料 7400 元/吨"          # 没有声明也能猜出来
+    assert _decode("EVA 9800".encode("utf-8"), "text/html; charset=utf-8") == "EVA 9800"

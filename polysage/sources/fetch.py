@@ -15,6 +15,30 @@ def _safe_name(url: str, ext: str) -> Path:
     return DOWNLOAD_DIR / f"{stem}_{h}{ext}"
 
 
+_META_CHARSET = re.compile(rb"""charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.I)
+
+
+def _decode(content: bytes, ctype: str = "") -> str:
+    """按 Content-Type / meta charset 解码；国内行情站、1688 多是 GBK，按 UTF-8 硬解会变乱码。"""
+    cands: list[str] = []
+    m = _META_CHARSET.search(ctype.encode("ascii", "ignore"))
+    if m:
+        cands.append(m.group(1).decode("ascii", "ignore"))
+    m2 = _META_CHARSET.search(content[:4096])
+    if m2:
+        cands.append(m2.group(1).decode("ascii", "ignore"))
+    cands += ["utf-8", "gb18030"]
+    for enc in cands:
+        enc = {"gbk": "gb18030", "gb2312": "gb18030", "utf8": "utf-8"}.get(enc.lower().strip(), enc.lower().strip())
+        try:
+            text = content.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if text.count("\ufffd") < 20:
+            return text
+    return content.decode("utf-8", errors="ignore")
+
+
 def fetch_url(url: str) -> dict:
     """返回 {kind: 'pdf'|'html'|'text', text, file_path, title}。"""
     ctype, content = get_bytes(url)
@@ -27,7 +51,7 @@ def fetch_url(url: str) -> dict:
 
         text, meta = parse_pdf(path)
         return {"kind": "pdf", "text": text, "file_path": str(path), "title": meta.get("title", "")}
-    html = content.decode("utf-8", errors="ignore")
+    html = _decode(content, ctype)
     try:
         import trafilatura
 
