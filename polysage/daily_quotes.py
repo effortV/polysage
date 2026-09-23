@@ -448,13 +448,17 @@ def purge_old_web_quotes() -> dict[str, int]:
 # ---------------- 辅料 / 再生料网查（按材料代码，不是树脂大类） ----------------
 
 MATERIAL_PROMPT = (
-    "下面是一个塑料原料供应/报价网页的正文。请把其中【{name}】（{hint}）的供应商报价拆成结构化行。输出 JSON："
-    "{{\"quotes\": [{{\"supplier\": \"厂商/店铺名称\", \"kind\": \"生产商|回收厂|贸易商|平台商家|行情|未知\", \"region\": \"省/市\", "
-    "\"grade\": \"牌号/规格/等级（如 一级透明、VA 18%、PPA 母粒）\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
-    "\"moq\": \"起订量\", \"contact\": \"页面上的电话/联系人，没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写留空\", "
-    "\"evidence\": \"原文报价句（不超过 60 字）\"}}]}}。"
-    "只要人民币报价，元/kg 换算成元/吨（×1000）；与该材料不同类的（别的牌号/别的品种）不要；匿名商家（“供应商 11”）不要；"
-    "最多 12 条，优先价格低、信息全的；找不到就 quotes=[]。\n\n网页：{url}\n正文：\n{text}"
+    "下面是一个塑料原料网页的正文，可能是【商家供应页】（有店铺/厂家名与标价）或【市场行情价格表】（按地区/品类列价格，没有具体商家）。"
+    "请把其中与【{name}】（{hint}）同类的报价拆成结构化行。输出 JSON："
+    "{{\"quotes\": [{{\"supplier\": \"商家名；行情表就写地区+市场，如 “山东再生PE市场”“河北保定市场”\", "
+    "\"kind\": \"生产商|回收厂|贸易商|平台商家|行情|未知（行情价格表一律写 行情）\", \"region\": \"省/市\", "
+    "\"grade\": \"规格/等级，如 一级透明颗粒、白色大众料、80%碳酸钙母粒\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
+    "\"moq\": \"起订量\", \"contact\": \"电话/联系人，没有留空\", \"date\": \"报价日期 YYYY-MM-DD，没写留空\", "
+    "\"evidence\": \"原文报价句（不超过 60 字）\"}}]}}。\n"
+    "要点：1) 1688/阿里类页面的标价是【元/千克】（如 7.30、10.10），换算成元/吨要 ×1000；写明“元/吨”的不用换算。"
+    "2) 行情表里写区间（如 5300-5400）取较低值；一行一个品类，不要合并。"
+    "3) 与该材料不同类的品种（别的树脂、别的用途）不要；匿名商家（“供应商 11”）不要。"
+    "4) 最多 12 条，优先价格低、信息全的；确实没有就 quotes=[]。\n\n网页：{url}\n正文：\n{text}"
 )
 
 # 非主料的检索词与说明；主料（LL/LLC/LD/HD/mLL）走贸易商日报与大类网查
@@ -512,11 +516,16 @@ def extract_material_quotes(code: str, url: str, text: str, today: _date, page_d
         return []
     freight = load_freight()
     host = urlparse(url).netloc.replace("www.", "")
+    qs = (data.get("quotes") if isinstance(data, dict) else None) or []
+    if not qs:
+        sourcing._log(f"[{code}] 无报价 {url[:60]}（正文 {len(text)} 字）")
     out = []
-    for q in (data.get("quotes") if isinstance(data, dict) else None) or []:
+    dropped = 0
+    for q in qs:
         price = _to_price_any(q.get("price"))
         name = (q.get("supplier") or "").strip()[:60]
         if price is None or not sourcing._valid_supplier(name, q.get("kind") or "未知"):
+            dropped += 1
             continue
         date_str = (q.get("date") or "").strip()
         if not _fresh(date_str, today, MATERIAL_MAX_AGE_DAYS):
@@ -530,6 +539,8 @@ def extract_material_quotes(code: str, url: str, text: str, today: _date, page_d
                     "moq": (q.get("moq") or "").strip()[:30], "contact": (q.get("contact") or "").strip()[:60],
                     "date": re.sub(r"[/.年月]", "-", date_str).rstrip("日-")[:10], "freight": fr, "landed": price + fr,
                     "evidence": (q.get("evidence") or "").strip()[:120], "url": url, "host": host})
+    if dropped:
+        sourcing._log(f"[{code}] {url[:50]}：{len(qs)} 条里丢掉 {dropped} 条（价格无效或商家名不合格）")
     return out
 
 

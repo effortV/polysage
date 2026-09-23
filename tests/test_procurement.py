@@ -83,3 +83,22 @@ def test_material_web_sourcing(monkeypatch, home):
     assert MAT.current_prices()["R1"]["estimate"] == rows[0]["landed_price"]
     assert P.best_source("R1")["tier"] == "web"
     pricing.undo_last_price("R1", "estimate")
+
+
+def test_material_extraction_accepts_market_tables(monkeypatch, home):
+    """行情价格表（没有商家名）按 kind=行情 收下；商家页按元/kg 换算。"""
+    from datetime import date
+
+    MAT.seed_materials()
+    today = date.today()
+    monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
+        {"supplier": "山东再生PE市场", "kind": "行情", "region": "山东", "grade": "EVA白色透明一级颗粒", "price": 5300, "tax_included": True,
+         "moq": "", "contact": "", "date": "", "evidence": "一级颗粒5300"},
+        {"supplier": "青岛聚利新能源科技有限公司", "kind": "生产商", "region": "山东", "grade": "高压一级再生", "price": 7300,
+         "tax_included": False, "moq": "1 吨", "contact": "0532-x", "date": "", "evidence": "7.30 元/千克"},
+        {"supplier": "山东", "kind": "贸易商", "price": 6000},          # 纯地区名 + 非行情 → 丢
+    ]})
+    rows = D.extract_material_quotes("R1", "https://x/1", "正文" * 200, today, today.isoformat())
+    assert [r["supplier"] for r in rows] == ["山东再生PE市场", "青岛聚利新能源科技有限公司"]
+    assert rows[0]["kind"] == "行情" and rows[1]["contact"] == "0532-x"
+    assert all(r["date"] == today.isoformat() for r in rows)          # 页面没写日期时按当天记
