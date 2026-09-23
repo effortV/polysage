@@ -52,12 +52,16 @@ def run(echo: Callable[[str], None] | None = None, *, n_generated: int = 40, top
             code = r["theme"] if r["theme"] in {f["code"] for f in L.list_formulations()} else None
             if not code:
                 code = _find_or_next(r["components"])
-            L.save_formulation(code, r["components"], structure=structure,
-                               predicted={"effects_short": r.get("effects_short"), "effects": r.get("effects"),
-                                          "pass_confidence": r.get("pass_confidence"), "expected": r.get("expected")},
-                               rationale=f"[{r['theme']}] {r.get('expected', '')}｜依据：{r.get('evidence', '')}",
-                               risks=f"{r.get('risk_level', '')}：{r.get('risks', '')}", priority=str(r.get("rank")),
-                               status="候选", origin="流水线 ④")
+            try:
+                L.save_formulation(code, r["components"], structure=structure,
+                                   predicted={"effects_short": r.get("effects_short"), "effects": r.get("effects"),
+                                              "pass_confidence": r.get("pass_confidence"), "expected": r.get("expected")},
+                                   rationale=f"[{r['theme']}] {r.get('expected', '')}｜依据：{r.get('evidence', '')}",
+                                   risks=f"{r.get('risk_level', '')}：{r.get('risks', '')}", priority=str(r.get("rank")),
+                                   status="候选", origin="流水线 ④")
+            except L.NotPurchasable as e:
+                state.log(f"{code} 未入配方库（{e}）", echo)
+                continue
             saved.append(code)
         summary = {"n_pool": len(pool), "n_top": len(ranked), "codes": saved, "outputs": [str(top_path), str(inq_path)],
                    "top": [{"rank": r["rank"], "formula": r["formula"], "cost": r["cost"], "savings_pct": round(r["savings_pct"] or 0, 1),

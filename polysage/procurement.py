@@ -190,9 +190,27 @@ def summary_of_sources() -> str:
 BUYABLE_TIERS = ("actual", "daily", "web")
 
 
+def in_base(code: str) -> bool:
+    """现配方正在用的料：工厂本来就在买，视为可采购（只是还没登记报价）。"""
+    try:
+        from .formulation import constraints as C
+
+        return code in (C.base_formulation() or {})
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def always_available(code: str) -> bool:
+    """现配方在用的料、以及必配助剂（工厂本来就在买，只是还没登记报价）视为可采购。"""
+    if in_base(code):
+        return True
+    flag = (MAT.get_material(code) or {}).get("use_flag") or ""
+    return "必配" in flag
+
+
 def is_buyable(code: str) -> bool:
-    """有实价 / 贸易商日报 / 网查报价 = 买得到；只有内部估计价不算。"""
-    return best_source(code)["tier"] in BUYABLE_TIERS
+    """有实价 / 贸易商日报 / 网查报价 = 买得到；现配方在用的料与必配助剂也算；只有内部估计价的新料不算。"""
+    return best_source(code)["tier"] in BUYABLE_TIERS or always_available(code)
 
 
 def buyable_codes(codes: list[str] | None = None) -> list[str]:

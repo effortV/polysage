@@ -18,7 +18,7 @@ def _clear_actuals(*codes: str) -> None:
 
 def test_best_source_priority_and_plan(monkeypatch, home):
     MAT.seed_materials()
-    _clear_actuals("LL", "LLC", "LD", "HD", "R1")
+    _clear_actuals("LL", "LLC", "LD", "HD", "R1", "AD", "POE")
     today = date.today().isoformat()
     # 日报：LL/LLC 9670；辅料 R1 网查 7600
     monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
@@ -34,7 +34,7 @@ def test_best_source_priority_and_plan(monkeypatch, home):
     assert s_ll["tier"] == "daily" and s_ll["price"] == 9520 + D.freight_for("杭州") and s_ll["supplier"] == "贸易商B"
     s_r1 = P.best_source("R1")
     assert s_r1["tier"] == "web" and s_r1["price"] == 7600 and s_r1["contact"] == "139-xxxx" and s_r1["region"] == "浙江台州"
-    assert P.best_source("AD")["tier"] == "estimate"            # 只有估计价
+    assert P.best_source("AD")["tier"] == "estimate"            # 只有估计价，但必配助剂仍算可采购
     pricing.record_price("R1", 7300, "actual", supplier="台州某某再生", source="询价")
     assert P.best_source("R1")["tier"] == "actual" and P.best_source("R1")["price"] == 7300
     pricing.undo_last_price("R1", "actual")
@@ -126,16 +126,15 @@ def test_library_carries_sourcing_and_recommend_uses_buyable(monkeypatch, home):
     from polysage.formulation import library as L
 
     MAT.seed_materials()
-    _clear_actuals("LL", "LLC", "R1")
+    _clear_actuals("LL", "LLC", "R1", "AD")
     monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
         {"family": "LLDPE", "producer": "华泰", "grade": "7042", "warehouse": "杭州", "delivery": "现货", "price": 9520, "tax_included": True}]})
     D.import_text("……", "贸易商B", date.today().isoformat(), apply=False)
 
-    L.save_formulation("T01", {"LL": 60, "R1": 39, "AD": 1}, rationale="测试", origin="测试")
+    L.save_formulation("T01", {"LL": 60, "LD": 10, "HD": 5, "R1": 25}, rationale="测试", origin="测试")   # 现配方的料都算买得到
     f = next(x for x in L.list_formulations() if x["code"] == "T01")
     assert "LL" in (f["sourcing_note"] or "") and "日报" in f["sourcing_note"]
-    assert not f["buyable"]                       # R1/AD 只有估计价 → 不是全部买得到
-    assert P.is_buyable("LL") and not P.is_buyable("AD")
+    assert P.is_buyable("LL") and P.is_buyable("AD")          # AD 是必配助剂，视为可采购（价格待询价）
 
     # 给 R1 一条网查报价 → 配方库的“原料采购”栏自动更新
     sid = D.sourcing.upsert_supplier({"name": "东莞某某再生", "kind": "回收厂", "region": "广东东莞"})
@@ -143,8 +142,44 @@ def test_library_carries_sourcing_and_recommend_uses_buyable(monkeypatch, home):
                            "price": 6000, "tax_included": True, "moq": "1 吨", "contact": "0769-x", "date": date.today().isoformat(),
                            "freight": 400, "landed": 6400, "evidence": "6000", "url": "https://x/2", "host": "x"}])
     f = next(x for x in L.list_formulations() if x["code"] == "T01")
-    assert "东莞某某再生" in f["sourcing_note"] and "6400" in f["sourcing_note"]
+    assert "东莞某某再生" in f["sourcing_note"] and "6400" in f["sourcing_note"] and f["buyable"]
     assert sid and P.is_buyable("R1")
 
     csv_text = L.export_library(home / "lib.csv").read_text(encoding="utf-8-sig")
     assert "原料采购（怎么来的）" in csv_text and "全部可采购" in csv_text
+
+
+def test_library_rejects_unbuyable_formulations(monkeypatch, home):
+    """买不到的配方不进配方库；现配方在用的料算买得到。"""
+    from polysage.formulation import constraints as C
+    from polysage.formulation import library as L
+
+    MAT.seed_materials()
+    _clear_actuals("LL", "LLC", "R1", "AD", "POE")
+    for f in L.list_formulations():                      # 其他测试留下的配方不影响本例
+        if f["code"] in ("OK1", "OK2", "BAD1"):
+            db.delete("formulations", f["id"])
+    base = C.base_formulation()
+    assert all(P.is_buyable(c) for c in base)              # 现配方的料：工厂本来就在买
+    assert P.is_buyable("AD")                              # 必配助剂：同样视为可采购（价格待询价）
+    assert not P.is_buyable("POE")                         # 只有内部估计价的新料：买不到，不能进方案
+
+    with __import__("pytest").raises(L.NotPurchasable) as e:
+        L.save_formulation("BAD1", {"LL": 60, "R1": 34, "POE": 5, "AD": 1}, origin="测试")
+    assert "POE" in str(e.value)
+    assert not any(f["code"] == "BAD1" for f in L.list_formulations())
+
+    ok = L.save_formulation("OK1", dict(base), origin="测试")
+    assert ok and any(f["code"] == "OK1" for f in L.list_formulations())
+
+    # 给 POE 一条网查报价后就能入库
+    D.save_material_rows([{"code": "POE", "supplier": "上海某某塑化", "kind": "贸易商", "region": "上海", "grade": "8150",
+                           "price": 14700, "tax_included": True, "moq": "", "contact": "021-x", "date": __import__("datetime").date.today().isoformat(),
+                           "freight": 100, "landed": 14800, "evidence": "14700", "url": "https://x/poe", "host": "x"}])
+    assert P.is_buyable("POE")
+    assert L.save_formulation("OK2", {"LL": 60, "R1": 34, "POE": 5, "AD": 1}, origin="测试")
+
+    # 来源失效后可以把买不到的旧配方清出去
+    monkeypatch.setattr(P, "unbuyable", lambda comps: ["POE"] if "POE" in comps else [])
+    removed = L.purge_unbuyable()
+    assert "OK2" in removed and not any(f["code"] == "OK2" for f in L.list_formulations())

@@ -68,6 +68,13 @@ def test_experiment_loop(fake_llm, fake_sources):
     assert out["models"] and (KB["model"] / "模型验证报告.md").exists()
     rr = stage_experiment.record_round(1)
     assert rr["round"] == 1
+    # 新规则：只有买得到的料才能进配方库——给设计空间里的料各登记一条正式报价
+    from polysage import pricing
+    from polysage.formulation import materials as MAT
+
+    for m in MAT.list_materials(active_only=True):
+        if m.get("price_actual") is None and m.get("price_estimate") is not None:
+            pricing.record_price(m["code"], float(m["price_estimate"]), "actual", source="测试报价")
     out = runner.run_stage("scan", echo=None)
     assert out["n_recommended"] >= 1 and (KB["experiment"] / "推荐配方.xlsx").exists()
     assert db.q1("SELECT COUNT(*) c FROM formulations WHERE status='推荐'")["c"] >= 1

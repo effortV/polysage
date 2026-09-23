@@ -158,10 +158,14 @@ def _render_tab_f() -> None:
                     elif (dup := L.find_by_components(comps)):
                         st.warning(f"已有相同组分的配方 {dup['code']}（来源：{dup.get('origin') or '-'}）")
                     else:
-                        code = L.next_code("G")
-                        L.save_formulation(code, comps, rationale=rationale, risks=risks, status="候选", origin=f"手工录入 {db.now()[:10]}")
-                        st.success(f"已存入 {code}")
-                        st.rerun()
+                        try:
+                            code = L.next_code("G")
+                            L.save_formulation(code, comps, rationale=rationale, risks=risks, status="候选", origin=f"手工录入 {db.now()[:10]}")
+                        except L.NotPurchasable as e:
+                            st.error(f"未入库——{e}。配方库只收买得到的料：先到「供应商与报价」网查该料报价，或在价格卡登记正式报价。")
+                        else:
+                            st.success(f"已存入 {code}")
+                            st.rerun()
     fdf = pd.DataFrame([{"编号": f["code"], "结构": f["structure"], "配方": f["formula"],
                          "当前成本": round(f["cost_used"]) if f.get("cost_used") else None, "口径": f.get("cost_tier"),
                          "估计价成本": round(f["cost_estimate"]) if f["cost_estimate"] else None,

@@ -177,8 +177,11 @@ DeepSeek 的函数调用参数用 `additionalProperties` 明确类型（否则 S
 - **原料采购（怎么来的）**：每种料的当前来源与价格，如 `LLC 9670（日报·贸易商B）；R1 6290（网查·东莞金满林）；AD 12500（估计价·待询价）`
 - **全部可采购**：所有组分都有实价/日报/网查来源时为“是”
 
-**配方只用买得到的料**：`recommend_schemes` 默认 `only_buyable=True`，没有任何报价来源（只有内部估计价）的料不参与出方案，
-结果里会写明本次排除了哪些料；现配方（base）里的料始终保留。
+**配方只用买得到的料，买不到的配方不入库**：
+- 可采购 = 有实价 / 贸易商日报 / 网查报价，或者是现配方正在用的料、标了“必配”的助剂（工厂本来就在买，只是还没登记报价）。
+- `recommend_schemes` 默认 `only_buyable=True`：其余材料（只有内部估计价的新料，如 POE、VL、mLL 等）不参与出方案，notes 写明本次排除了哪些。
+- `library.save_formulation` 默认校验，买不到就抛 `NotPurchasable` 不入库；流水线 ④/⑧、对话、手工录入都遵守；
+  `library.purge_unbuyable()` 可以把来源失效的旧配方清出去。
 
 
 配方库（数据 → 原料与价格 → 配方库）不再预置“内部技术路线 V2.0 表 4-3 首版”种子（已清理），配方只来自：
@@ -228,6 +231,9 @@ DeepSeek 的函数调用参数用 `additionalProperties` 明确类型（否则 S
 - 询价清单：导出 xlsx 给采购；回来填“实际报价”→“登记为实价”→ `pricing.record_price`，价格卡与推荐自动重排。
 - 厂商库：累积档案，可手动录入现有供应商与报价；对话里可用 `find_suppliers` / `supplier_quotes`。
 - 网查价只用于“该问谁、大致区间”，不当实价；1688 等平台页面部分需登录，联系方式以平台为准。
+
+**搜索后端**：必应 → 搜狗 → 360，三家都是自带解析、直连、每家 12 秒超时，一条查询最多约 40 秒就返回；
+ddgs 那套在国内服务器上基本不通，只有设 `WEBSEARCH_USE_DDGS=1` 时才兜底（否则一条失败的查询要卡 6～7 分钟）。
 
 **出网策略**（`polysage/net.py`）：这台机器开着系统代理，默认国内站点直连、只有 `PROXY_HOSTS`（Google、DuckDuckGo、Brave、Tavily…）走代理；
 `.env` 可设 `PROXY_MODE=auto|system|off`、`PROXY_HOSTS=域名,域名`。

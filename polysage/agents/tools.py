@@ -522,9 +522,15 @@ def save_formulation(components: dict, code: str = "", structure: str = "mono", 
     dup = find_by_components(comps)
     if dup and not code:
         return f"配方库里已有相同组分的配方 {dup['code']}（来源：{dup.get('origin') or '-'}），不重复入库。", []
+    from ..formulation.library import NotPurchasable
+
     code = code or next_code("G")
-    fid = _sf(code, comps, structure=structure, predicted={"effects_short": effects_short}, rationale=rationale, risks=risks,
-              priority=priority, status=status, origin=f"对话手工 {_db.now()[:10]}")
+    try:
+        fid = _sf(code, comps, structure=structure, predicted={"effects_short": effects_short}, rationale=rationale, risks=risks,
+                  priority=priority, status=status, origin=f"对话手工 {_db.now()[:10]}")
+    except NotPurchasable as e:
+        return (f"这个配方没有入库：{e}。配方库只收买得到的料——先用 find_material_suppliers 网查该料的厂商报价，"
+                "或用 add_price 登记一个正式报价，再存一次。"), []
     return f"已保存配方 {code}（id={fid}，来源：对话手工）", []
 
 

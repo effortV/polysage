@@ -154,15 +154,17 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
         from . import procurement
 
         all_codes = [m["code"] for m in MAT.list_materials(active_only=True)]
-        # 必配助剂（AD）没有公开报价也要留着，否则配方不完整；它会在采购方案里标“待询价”
-        buyable = set(procurement.buyable_codes(all_codes)) | set(base) | {"AD"}
+        buyable = set(procurement.buyable_codes(all_codes)) | set(base)
         excluded = [c for c in all_codes if c not in buyable]
         if excluded and len(buyable) >= 3:
             allowed = sorted(buyable)
             names = {m["code"]: m["name"] for m in MAT.list_materials(active_only=False)}
             notes.append("只用买得到的料（有实价/贸易商日报/网查报价）；本次排除：" +
                          "、".join(f"{c}" for c in excluded[:12]) + ("…" if len(excluded) > 12 else "") +
-                         "。要用它们先在「供应商与报价」网查或登记报价；必配助剂 AD 保留，采购时标待询价。")
+                         "。要用它们先在「供应商与报价」网查或登记报价。")
+            waiting = [c for c in buyable if not procurement.best_source(c)["tier"] in procurement.BUYABLE_TIERS]
+            if waiting:
+                notes.append("以下料按“现配方在用 / 必配助剂”保留，但还没有报价来源，采购方案里标待询价：" + "、".join(waiting) + "。")
 
     # 1) 替代品窗口筛选（基准 = base 里用量最大的新料）
     ref = max((k for k in base if not (MAT.get_material(k) or {}).get("is_recycled")), key=lambda k: base[k], default="LL")
@@ -249,11 +251,20 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
                          "expected": r.get("expected"), "risk": r.get("risks"), "confidence": r.get("pass_confidence")} for r in ranked]
         experiments = pick_first_round(top_for_pick, task.brief())
 
-    # 6) 入库与导出
+    # 6) 采购来源 → 入库与导出（买不到的配方不入库）
+    from . import procurement as _proc
+
+    for r in ranked:
+        r["sourcing"] = _proc.sourcing_note(r["components"])
+        r["unbuyable"] = _proc.unbuyable(r["components"])
     out_at = db.now()
     codes = []
+    skipped_lib = []
     if inp.save_to_library:
         for r in ranked:
+            if r.get("unbuyable"):
+                skipped_lib.append(r["formula"])
+                continue          # 买不到的配方不进配方库
             code = _existing_code(r["components"]) or L.next_code("A")
             L.save_formulation(code, r["components"], structure=structure,
                                predicted={"effects_short": r.get("effects_short"), "effects": r.get("effects"), "pass_confidence": r.get("pass_confidence"),
@@ -262,13 +273,11 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
                                risks=f"{r.get('risk_level', '')}：{r.get('risks', '')}", priority=str(r["rank"]), status="候选",
                                origin=f"{inp.origin} {out_at[:10]}")
             codes.append(code)
+    if skipped_lib:
+        notes.append(f"{len(skipped_lib)} 个方案含买不到的料，未进配方库（采购方案里会标待询价）。")
     from . import basedata
 
-    from . import procurement as _proc
-
     for r in ranked:
-        r["sourcing"] = _proc.sourcing_note(r["components"])
-        r["unbuyable"] = _proc.unbuyable(r["components"])
         ml_ = r.get("ml") or {}
         if ml_.get("pred") and basedata.is_ready():
             r["judge"] = basedata.judge({k: v["mean"] for k, v in ml_["pred"].items()})

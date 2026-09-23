@@ -141,9 +141,12 @@ def run_scan(echo: Callable[[str], None] | None = None, n_exploit: int = 4, n_ex
         # 存入配方库（状态：推荐）
         for _, r in rec.iterrows():
             code = L.next_code("R")
-            L.save_formulation(code, {c: float(r[c]) for c in comp_cols if r[c]},
-                               predicted={tg: {"mean": float(r[tg + "_mean"]), "sd": float(r.get(tg + "_sd") or 0)} for tg in targets} | {"p_pass": float(r["p_pass"])},
-                               rationale=f"[{r['type']}] {r['理由']}", risks=r["观察点"], priority=str(r["序号"]), status="推荐", origin="流水线 ⑧ 扫描")
+            try:
+                L.save_formulation(code, {c: float(r[c]) for c in comp_cols if r[c]},
+                                   predicted={tg: {"mean": float(r[tg + "_mean"]), "sd": float(r.get(tg + "_sd") or 0)} for tg in targets} | {"p_pass": float(r["p_pass"])},
+                                   rationale=f"[{r['type']}] {r['理由']}", risks=r["观察点"], priority=str(r["序号"]), status="推荐", origin="流水线 ⑧ 扫描")
+            except L.NotPurchasable:
+                continue      # 买不到的料不进配方库
         md = [f"# 扫描推荐（{db.now()}）", "", res.get("note", ""), "", f"候选空间 {res['n_candidates']} 个；阈值：" + ", ".join(f"{k}={v:.4g}" for k, v in res["thresholds"].items()), "",
               "| 序号 | 类型 | 配方 | 成本 | P(过关) | 复核 | 理由 | 观察点 |", "|---|---|---|---|---|---|---|---|"]
         for _, r in rec.iterrows():

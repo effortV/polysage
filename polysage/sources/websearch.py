@@ -60,7 +60,7 @@ _BING_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML
 _BING_FRESH = {"d": "ez1", "w": "ez2", "m": "ez3"}
 
 
-def _bing_html(query: str, limit: int, timelimit: str | None = None) -> list[SearchHit]:
+def _bing_html(query: str, limit: int, timelimit: str | None = None, timeout: float = 12.0) -> list[SearchHit]:
     """直接解析 cn.bing.com 结果页：服务器（无代理）上 ddgs 的 bing 后端常失败，这个最稳；timelimit d/w/m 对应必应的时间筛选。"""
     from urllib.parse import quote
 
@@ -69,7 +69,7 @@ def _bing_html(query: str, limit: int, timelimit: str | None = None) -> list[Sea
     url = f"https://cn.bing.com/search?q={quote(query)}&mkt=zh-CN&setlang=zh-hans&count={min(max(limit, 10), 30)}"
     if timelimit in _BING_FRESH:
         url += f"&filters=ex1%3a%22{_BING_FRESH[timelimit]}%22"
-    with net.client(url, timeout=25, follow_redirects=True) as c:
+    with net.client(url, timeout=timeout, follow_redirects=True) as c:
         r = c.get(url, headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"})
     if r.status_code >= 400:
         raise RuntimeError(f"bing {r.status_code}")
@@ -107,7 +107,7 @@ _SOGOU_FRESH = {"d": "1", "w": "2", "m": "3"}
 _JS_REDIRECT = re.compile(r"""(?:location\.replace|window\.location(?:\.href)?\s*=|URL=)\s*\(?["']?(https?://[^"'\s)]+)""")
 
 
-def _sogou_html(query: str, limit: int, timelimit: str | None = None) -> list[SearchHit]:
+def _sogou_html(query: str, limit: int, timelimit: str | None = None, timeout: float = 12.0) -> list[SearchHit]:
     """搜狗网页搜索：服务器（国内 IP、无代理）上最稳的一家，支持一天/一周/一月内筛选；结果是跳转链接，逐个解析成真实网址。"""
     from urllib.parse import quote
 
@@ -117,7 +117,7 @@ def _sogou_html(query: str, limit: int, timelimit: str | None = None) -> list[Se
     if timelimit in _SOGOU_FRESH:
         url += f"&tsn={_SOGOU_FRESH[timelimit]}"
     hits: list[SearchHit] = []
-    with net.client(url, timeout=25, follow_redirects=True) as c:
+    with net.client(url, timeout=timeout, follow_redirects=True) as c:
         r = c.get(url, headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"})
         if r.status_code >= 400:
             raise RuntimeError(f"sogou {r.status_code}")
@@ -148,14 +148,14 @@ def _sogou_html(query: str, limit: int, timelimit: str | None = None) -> list[Se
     return hits
 
 
-def _so360_html(query: str, limit: int) -> list[SearchHit]:
+def _so360_html(query: str, limit: int, timeout: float = 12.0) -> list[SearchHit]:
     """360 搜索兜底（没有可靠的时间筛选，靠页面日期过滤）。"""
     from urllib.parse import quote
 
     from bs4 import BeautifulSoup
 
     url = f"https://www.so.com/s?q={quote(query)}"
-    with net.client(url, timeout=25, follow_redirects=True) as c:
+    with net.client(url, timeout=timeout, follow_redirects=True) as c:
         r = c.get(url, headers={"User-Agent": _BING_UA, "Accept-Language": "zh-CN,zh;q=0.9"})
     if r.status_code >= 400:
         raise RuntimeError(f"360 {r.status_code}")
@@ -223,12 +223,26 @@ def search(query: str, limit: int = 10, region: str = "cn-zh", *, bing_first: bo
 
 
 def _search(query: str, limit: int, region: str, bing_first: bool = False, timelimit: str | None = None) -> list[SearchHit]:
+    """必应 → 搜狗 → 360（都是自带解析，直连、各 ~10 s）；ddgs 那套在国内服务器上基本不通，
+    只有环境变量 WEBSEARCH_USE_DDGS=1 时才兜底，免得一条查询卡好几分钟。"""
+    import os
+
     if settings.tavily_api_key:
         try:
             return _tavily(query, limit)
         except Exception:  # noqa: BLE001
             pass
-    try:
-        return _ddg(query, limit, region, BING_FIRST_CHAIN if bing_first else DEFAULT_CHAIN, timelimit)
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"网页搜索失败（DuckDuckGo）：{e}")
+    errors: list[str] = []
+    for name, fn in (("bing", lambda: _bing_html(query, limit, timelimit)),
+                     ("sogou", lambda: _sogou_html(query, limit, timelimit)),
+                     ("360", lambda: _so360_html(query, limit))):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{name}:{str(e)[:40]}")
+    if os.getenv("WEBSEARCH_USE_DDGS") == "1":
+        try:
+            return _ddg(query, limit, region, BING_FIRST_CHAIN if bing_first else DEFAULT_CHAIN, timelimit)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"ddgs:{str(e)[:40]}")
+    raise RuntimeError("网页搜索无结果（" + "；".join(errors) + "）")

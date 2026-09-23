@@ -57,9 +57,26 @@ def _sourcing(components: dict[str, float]) -> tuple[str, int]:
         return "", 0
 
 
+class NotPurchasable(ValueError):
+    """配方里有买不到的料（没有任何报价来源），按规则不入库。"""
+
+
 def save_formulation(code: str, components: dict[str, float], *, structure: str = "mono", transparent: str | None = None,
                      predicted: dict[str, Any] | None = None, rationale: str = "", risks: str = "",
-                     priority: str = "", status: str = "候选", origin: str = "") -> int:
+                     priority: str = "", status: str = "候选", origin: str = "", require_buyable: bool = True) -> int:
+    """入库；require_buyable=True（默认）时，组分里有买不到的料就拒绝——配方库只留真正能采购的配方。"""
+    if require_buyable:
+        try:
+            from .. import procurement
+
+            bad = procurement.unbuyable(components)
+        except Exception:  # noqa: BLE001
+            bad = []
+        if bad:
+            from .materials import list_materials as _lm
+
+            names = {m["code"]: m["name"] for m in _lm(active_only=False)}
+            raise NotPurchasable("买不到：" + "、".join(f"{c}（{names.get(c, c)}）" for c in bad))
     res = COST.compute(components)
     note, buyable = _sourcing(components)
     data = {
@@ -130,6 +147,20 @@ SEED_ORIGIN = "内部技术路线 V2.0 表 4-3 首版"
 def seed_top20() -> int:
     """（已停用种子）配方库只收研发流水线、对话/表单推荐和手工录入的配方；这里顺手把早期写入的首版种子清掉。返回清掉的条数。"""
     return purge_seed_top20()
+
+
+def purge_unbuyable() -> list[str]:
+    """清掉库里含买不到原料的配方（例如某种料的报价来源失效后）。返回被删的编号。"""
+    from .. import procurement
+
+    removed = []
+    for f in list_formulations():
+        if procurement.unbuyable(f["components"]):
+            db.delete("formulations", f["id"])
+            removed.append(f["code"])
+    if removed:
+        export_library()
+    return removed
 
 
 def purge_seed_top20() -> int:

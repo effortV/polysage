@@ -157,6 +157,7 @@ def seed_library() -> int:
         if L.db.q1("SELECT id FROM formulations WHERE code=?", (f["code"],)):
             continue
         L.save_formulation(f["code"], f["comps"], structure=f["structure"], predicted={"effects_short": f["effects"]},
-                           rationale=f["rationale"], risks=f["risks"], priority=f["priority"], status="候选", origin="测试示例")
+                           rationale=f["rationale"], risks=f["risks"], priority=f["priority"], status="候选", origin="测试示例",
+                           require_buyable=False)     # 测试示例配方跳过“买得到”校验
         n += 1
     return n
