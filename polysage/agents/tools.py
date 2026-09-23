@@ -221,6 +221,8 @@ def recommend_schemes(materials: list[dict] | None = None, only_listed_materials
         ml = s.get("ml") or {}
         lines.append(f"{s['rank']}. [{s['theme']}] {s['formula']} | 成本 {s['cost']}（{s['cost_tier']}）| 降本 {s['savings_pct']:.1f}% | "
                      f"四项 {s.get('effects_short') or '-'} | 把握 {s.get('pass_confidence') or '-'}" + (f" | P(过关) {ml['p_pass']:.2f}" if ml.get('p_pass') is not None else ""))
+        if s.get("sourcing"):
+            lines.append(f"    原料采购：{s['sourcing']}")
     lines.append("产出：" + "; ".join(out["outputs"]))
     if out.get("library_codes"):
         lines.append("已存入配方库（来源：对话推荐）：" + ", ".join(out["library_codes"]))

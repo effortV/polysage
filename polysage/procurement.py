@@ -184,3 +184,37 @@ def summary_of_sources() -> str:
         lines.append(f"{m['code']} {m['name']}：{s['price']:.0f} 元/吨（{TIER_LABEL[s['tier']]}"
                      + (f"，{s['supplier']}" if s["supplier"] else "") + "）")
     return "\n".join(lines) or "暂无价格来源。"
+
+# ---------------- 可采购性（配方只用买得到的料） ----------------
+
+BUYABLE_TIERS = ("actual", "daily", "web")
+
+
+def is_buyable(code: str) -> bool:
+    """有实价 / 贸易商日报 / 网查报价 = 买得到；只有内部估计价不算。"""
+    return best_source(code)["tier"] in BUYABLE_TIERS
+
+
+def buyable_codes(codes: list[str] | None = None) -> list[str]:
+    from .formulation.materials import list_materials
+
+    codes = codes or [m["code"] for m in list_materials(active_only=True)]
+    return [c for c in codes if is_buyable(c)]
+
+
+def unbuyable(components: dict[str, float]) -> list[str]:
+    return [c for c, w in components.items() if w and not is_buyable(c)]
+
+
+def sourcing_note(components: dict[str, float]) -> str:
+    """配方库“原料采购”栏：每种料怎么来的（谁家、多少钱、什么口径）。"""
+    parts = []
+    for code, w in sorted(components.items(), key=lambda kv: -kv[1]):
+        if not w:
+            continue
+        s = best_source(code)
+        who = s["supplier"] or ("待询价" if s["tier"] in ("estimate", "none") else "")
+        price = f"{s['price']:.0f}" if s["price"] is not None else "无价"
+        tag = {"actual": "实价", "daily": "日报", "web": "网查", "estimate": "估计价", "none": "无"}[s["tier"]]
+        parts.append(f"{code} {price}（{tag}{'·' + who if who else ''}）")
+    return "；".join(parts)

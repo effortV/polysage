@@ -168,7 +168,8 @@ def _render_tab_f() -> None:
                          "实价成本": round(f["cost_actual"]) if f["cost_actual"] else None,
                          "降本": round(base_cost - f["cost_used"]) if base_cost and f.get("cost_used") else None,
                          "面积指数": f["area_index"], "四项预期": (f["predicted"] or {}).get("effects_short"), "优先级": f["priority"],
-                         "状态": f["status"], "思路": f["rationale"], "风险": f["risks"], "来源": f["origin"]} for f in forms])
+                         "状态": f["status"], "思路": f["rationale"], "风险": f["risks"], "来源": f["origin"],
+                         "原料采购（怎么来的）": f.get("sourcing_note") or "", "全部可采购": "是" if f.get("buyable") else "否"} for f in forms])
     st.dataframe(fdf, hide_index=True, height=480, **ui.WIDE)
     s1, s2, s3 = ui.hrow(3)
     code = s1.selectbox("改状态", [f["code"] for f in forms]) if forms else None

@@ -303,6 +303,10 @@ def migrate(conn: sqlite3.Connection) -> None:
                       ("landed_price", "REAL"), ("channel", "TEXT DEFAULT '网查'")):
         if qcols and name not in qcols:
             conn.execute(f"ALTER TABLE supplier_quotes ADD COLUMN {name} {typ}")
+    # 配方库：原料采购（每种料怎么来的）与可采购标记
+    for name, typ in (("sourcing_note", "TEXT"), ("buyable", "INTEGER")):
+        if name not in fcols:
+            conn.execute(f"ALTER TABLE formulations ADD COLUMN {name} {typ}")
     conn.commit()
 
 

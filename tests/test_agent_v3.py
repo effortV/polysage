@@ -52,9 +52,14 @@ def test_generator_allowed_and_llc_theme():
 
 
 def test_recommender_and_price_linkage(fake_llm):
+    # 新规则：只用买得到的料（有实价/报价来源），所以先给 LLC 一条正式报价
+    pricing.record_price("LLC", 8300, "actual", source="测试基准报价")
     inp = recommender.example_input()
     inp["use_llm"] = False
     out = recommender.recommend(inp)
+    assert any("只用买得到的料" in n for n in out["notes"])
+    keep = set(out["base_formulation"]) | {"AD"}      # 现配方里的料与必配助剂即使暂无报价也保留（标待询价）
+    assert all(set(s.get("unbuyable") or []) <= keep for s in out["schemes"])
     assert out["schemes"] and out["schemes"][0]["rank"] == 1
     assert all(s["cost"] < out["cost_limit"] for s in out["schemes"])
     assert out["screening"] and Path(out["outputs"][0]).exists()

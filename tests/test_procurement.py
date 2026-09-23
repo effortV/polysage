@@ -117,3 +117,34 @@ def test_quality_filter_drops_unusable_grades(monkeypatch, home):
     rows = D.extract_material_quotes("R1", "https://x/1", "正文" * 200, date.today(), "")
     assert [r["supplier"] for r in rows] == ["广东再生高压市场"] and rows[0]["price"] == 6300
     assert D._quality_ok("POE", "8150", "")          # 没配过滤词的材料不受影响
+
+
+def test_library_carries_sourcing_and_recommend_uses_buyable(monkeypatch, home):
+    """配方库带“原料采购”栏并随报价更新；推荐只用买得到的料。"""
+    from datetime import date
+
+    from polysage.formulation import library as L
+
+    MAT.seed_materials()
+    _clear_actuals("LL", "LLC", "R1")
+    monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
+        {"family": "LLDPE", "producer": "华泰", "grade": "7042", "warehouse": "杭州", "delivery": "现货", "price": 9520, "tax_included": True}]})
+    D.import_text("……", "贸易商B", date.today().isoformat(), apply=False)
+
+    L.save_formulation("T01", {"LL": 60, "R1": 39, "AD": 1}, rationale="测试", origin="测试")
+    f = next(x for x in L.list_formulations() if x["code"] == "T01")
+    assert "LL" in (f["sourcing_note"] or "") and "日报" in f["sourcing_note"]
+    assert not f["buyable"]                       # R1/AD 只有估计价 → 不是全部买得到
+    assert P.is_buyable("LL") and not P.is_buyable("AD")
+
+    # 给 R1 一条网查报价 → 配方库的“原料采购”栏自动更新
+    sid = D.sourcing.upsert_supplier({"name": "东莞某某再生", "kind": "回收厂", "region": "广东东莞"})
+    D.save_material_rows([{"code": "R1", "supplier": "东莞某某再生", "kind": "回收厂", "region": "广东东莞", "grade": "高压一级透明",
+                           "price": 6000, "tax_included": True, "moq": "1 吨", "contact": "0769-x", "date": date.today().isoformat(),
+                           "freight": 400, "landed": 6400, "evidence": "6000", "url": "https://x/2", "host": "x"}])
+    f = next(x for x in L.list_formulations() if x["code"] == "T01")
+    assert "东莞某某再生" in f["sourcing_note"] and "6400" in f["sourcing_note"]
+    assert sid and P.is_buyable("R1")
+
+    csv_text = L.export_library(home / "lib.csv").read_text(encoding="utf-8-sig")
+    assert "原料采购（怎么来的）" in csv_text and "全部可采购" in csv_text

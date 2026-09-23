@@ -157,6 +157,16 @@ def _code_for(family: str) -> str | None:
     return codes[0] if codes else None
 
 
+def _refresh_library() -> None:
+    """报价一变，配方库的成本与“原料采购”栏跟着更新（价格卡没变时也要更新来源）。"""
+    try:
+        from .formulation import library as L
+
+        L.recompute_costs()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def save_rows(rows: list[dict[str, Any]], *, channel: str = "日报", credibility: int = 5) -> dict[str, int]:
     """入库到 supplier_quotes（报价商作为供应商）。channel=日报（贸易商发来的）/ 网查（对照）。返回 {新增, 重复, 跳过}。"""
     n_new = n_dup = n_skip = 0
@@ -184,6 +194,8 @@ def save_rows(rows: list[dict[str, Any]], *, channel: str = "日报", credibilit
             "landed_price": r["landed"], "channel": channel,
         })
         n_new += 1
+    if n_new:
+        _refresh_library()
     return {"new": n_new, "dup": n_dup, "skip": n_skip}
 
 
@@ -598,6 +610,8 @@ def save_material_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
             "landed_price": r["landed"], "channel": "网查",
         })
         n_new += 1
+    if n_new:
+        _refresh_library()
     return {"new": n_new, "dup": n_dup}
 
 

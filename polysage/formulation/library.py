@@ -47,12 +47,24 @@ SEED_TOP20: list[dict[str, Any]] = [
 ]
 
 
+def _sourcing(components: dict[str, float]) -> tuple[str, int]:
+    """配方的原料采购摘要与“是否全部买得到”。采购模块出问题时不影响存配方。"""
+    try:
+        from .. import procurement
+
+        return procurement.sourcing_note(components), int(not procurement.unbuyable(components))
+    except Exception:  # noqa: BLE001
+        return "", 0
+
+
 def save_formulation(code: str, components: dict[str, float], *, structure: str = "mono", transparent: str | None = None,
                      predicted: dict[str, Any] | None = None, rationale: str = "", risks: str = "",
                      priority: str = "", status: str = "候选", origin: str = "") -> int:
     res = COST.compute(components)
+    note, buyable = _sourcing(components)
     data = {
         "structure": structure, "transparent": transparent, "components_json": db.dumps(components),
+        "sourcing_note": note, "buyable": buyable,
         "cost_estimate": res.cost_estimate, "cost_actual": res.cost_actual, "cost_used": res.cost_used, "density": res.density,
         "area_index": res.area_index, "predicted_json": db.dumps(predicted or {}), "rationale": rationale,
         "risks": risks, "priority": priority, "status": status, "origin": origin, "updated_at": db.now(),
@@ -103,9 +115,10 @@ def recompute_costs() -> int:
     n = 0
     for r in list_formulations():
         res = COST.compute(r["components"])
+        note, buyable = _sourcing(r["components"])
         db.update("formulations", r["id"], {"cost_estimate": res.cost_estimate, "cost_actual": res.cost_actual,
                                             "cost_used": res.cost_used, "density": res.density, "area_index": res.area_index,
-                                            "updated_at": db.now()})
+                                            "sourcing_note": note, "buyable": buyable, "updated_at": db.now()})
         n += 1
     export_library()
     return n
@@ -147,7 +160,7 @@ def export_library(path: Path | None = None) -> Path:
     with path.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["编号", "结构", "配方(重量%)", "当前成本(混合口径)", "口径", "估计价成本", "实价成本", "降本(元/吨)", "面积成本指数",
-                    "四项预期", "优先级", "状态", "设计思路", "风险", "来源", "更新时间"])
+                    "四项预期", "优先级", "状态", "设计思路", "风险", "来源", "原料采购（怎么来的）", "全部可采购", "更新时间"])
         for r in list_formulations():
             cost = r["cost_used"]
             sav = round(base_cost - cost) if (base_cost and cost) else ""
@@ -156,5 +169,6 @@ def export_library(path: Path | None = None) -> Path:
                         round(r["cost_estimate"]) if r["cost_estimate"] else "",
                         round(r["cost_actual"]) if r["cost_actual"] else "", sav,
                         r["area_index"], (r["predicted"] or {}).get("effects_short", ""), r["priority"], r["status"],
-                        r["rationale"], r["risks"], r["origin"], r["updated_at"]])
+                        r["rationale"], r["risks"], r["origin"], r.get("sourcing_note") or "",
+                        "是" if r.get("buyable") else "否", r["updated_at"]])
     return path

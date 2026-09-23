@@ -43,6 +43,7 @@ class RecommendInput:
     use_llm: bool = True
     use_ml: bool = True
     save_to_library: bool = True
+    only_buyable: bool = True   # 只用买得到的料（有实价/日报/网查报价），现配方里的料始终保留
     origin: str = "配方推荐页"   # 进配方库时的来源标签：对话推荐 / 配方推荐页
     seed: int = 42
 
@@ -148,6 +149,20 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
     structure = inp.product.get("structure", "mono")
     listed = [str(m["code"]) for m in inp.materials if m.get("code")]
     allowed = listed if (inp.only_listed_materials and listed) else None
+    if inp.only_buyable and not allowed:
+        # 配方里的料必须买得到：没有任何报价来源（只有内部估计价）的料不参与出方案
+        from . import procurement
+
+        all_codes = [m["code"] for m in MAT.list_materials(active_only=True)]
+        # 必配助剂（AD）没有公开报价也要留着，否则配方不完整；它会在采购方案里标“待询价”
+        buyable = set(procurement.buyable_codes(all_codes)) | set(base) | {"AD"}
+        excluded = [c for c in all_codes if c not in buyable]
+        if excluded and len(buyable) >= 3:
+            allowed = sorted(buyable)
+            names = {m["code"]: m["name"] for m in MAT.list_materials(active_only=False)}
+            notes.append("只用买得到的料（有实价/贸易商日报/网查报价）；本次排除：" +
+                         "、".join(f"{c}" for c in excluded[:12]) + ("…" if len(excluded) > 12 else "") +
+                         "。要用它们先在「供应商与报价」网查或登记报价；必配助剂 AD 保留，采购时标待询价。")
 
     # 1) 替代品窗口筛选（基准 = base 里用量最大的新料）
     ref = max((k for k in base if not (MAT.get_material(k) or {}).get("is_recycled")), key=lambda k: base[k], default="LL")
@@ -249,7 +264,11 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
             codes.append(code)
     from . import basedata
 
+    from . import procurement as _proc
+
     for r in ranked:
+        r["sourcing"] = _proc.sourcing_note(r["components"])
+        r["unbuyable"] = _proc.unbuyable(r["components"])
         ml_ = r.get("ml") or {}
         if ml_.get("pred") and basedata.is_ready():
             r["judge"] = basedata.judge({k: v["mean"] for k, v in ml_["pred"].items()})
@@ -282,7 +301,8 @@ def export(out: dict[str, Any], stem: str | None = None) -> list[Path]:
         rows.append({"排名": r["rank"], "设计思路": r["theme"], "配方（组分+比例%）": r["formula"], "成本(元/吨)": r["cost"], "价格口径": r["cost_tier"],
                      "较现配方降本(元/吨)": round(r["savings"]) if r.get("savings") is not None else None,
                      "降本%": round(r["savings_pct"], 1) if r.get("savings_pct") is not None else None, "面积成本指数": r.get("area_index"),
-                     "四项预期(拉 撕 穿 封 透)": r.get("effects_short"), "预期说明": r.get("expected"), "风险": r.get("risks"), "风险等级": r.get("risk_level"),
+                     "四项预期(拉 撕 穿 封 透)": r.get("effects_short"), "原料采购（怎么来的）": r.get("sourcing"),
+                     "全部可采购": "否" if r.get("unbuyable") else "是", "预期说明": r.get("expected"), "风险": r.get("risks"), "风险等级": r.get("risk_level"),
                      "过关把握": r.get("pass_confidence"), "依据": r.get("evidence"),
                      "模型 P(过关)": round(ml["p_pass"], 2) if ml.get("p_pass") is not None else None,
                      "模型预测": "; ".join(f"{k} {v['mean']:.3g}±{v['sd']:.2g}" for k, v in (ml.get("pred") or {}).items())})
