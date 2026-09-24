@@ -3,10 +3,46 @@ from __future__ import annotations
 
 import streamlit as st
 
-from . import llm, ui
+from pathlib import Path
+
+from . import answer_doc, llm, ui
 from .agents import runner
 from .agents.roles import ROLES
 from .config import settings
+
+
+
+_MIME = {".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+         ".xls": "application/vnd.ms-excel", ".csv": "text/csv",
+         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+         ".md": "text/markdown", ".json": "application/json", ".pdf": "application/pdf"}
+
+
+def render_downloads(content: str, key: str) -> None:
+    """回答下面的下载条：它生成的表格文件 + 本条回答导出的 Word。"""
+    if not (content or "").strip():
+        return
+    files = answer_doc.referenced_files(content)
+    cols = st.columns(min(len(files) + 1, 4))
+    for i, f in enumerate(files):
+        try:
+            data = f.read_bytes()
+        except OSError:
+            continue
+        cols[i % len(cols)].download_button(f"下载 {f.name[:28]}", data, file_name=f.name,
+                                            mime=_MIME.get(f.suffix.lower(), "application/octet-stream"),
+                                            key=f"dl_{key}_{i}")
+    col = cols[len(files) % len(cols)]
+    if col.button("导出本条回答 Word", key=f"docx_{key}"):
+        try:
+            path = answer_doc.answer_to_docx(content)
+            st.session_state[f"docx_path_{key}"] = str(path)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"导出失败：{e}")
+    saved = st.session_state.get(f"docx_path_{key}")
+    if saved and Path(saved).exists():
+        st.download_button("下载 Word", Path(saved).read_bytes(), file_name=Path(saved).name,
+                           mime=_MIME[".docx"], key=f"dldocx_{key}")
 
 
 def render_session_chat(session_id: int, placeholder: str, *, key: str = "chat", examples: list[str] | None = None) -> None:
@@ -35,6 +71,7 @@ def render_session_chat(session_id: int, placeholder: str, *, key: str = "chat",
                         st.json(tc["arguments"])
                 if m.get("content"):
                     st.write(m["content"])
+                    render_downloads(m["content"], f"{key}_{m['id']}")
                 if m.get("citations"):
                     with ui.expander("出处"):
                         for c in m["citations"]:
@@ -66,6 +103,7 @@ def render_session_chat(session_id: int, placeholder: str, *, key: str = "chat",
             try:
                 res = runner.chat(session_id, prompt, on_event=on_event)
                 st.write(res["content"])
+                render_downloads(res["content"], f"{key}_new")
                 if res["citations"]:
                     with ui.expander("出处"):
                         for c in res["citations"]:

@@ -183,3 +183,24 @@ def test_library_rejects_unbuyable_formulations(monkeypatch, home):
     monkeypatch.setattr(P, "unbuyable", lambda comps: ["POE"] if "POE" in comps else [])
     removed = L.purge_unbuyable()
     assert "OK2" in removed and not any(f["code"] == "OK2" for f in L.list_formulations())
+
+
+def test_answer_doc_export_and_file_detection(home):
+    """回答里提到的文件能被认出来；回答本身能导成 Word。"""
+    from polysage import answer_doc as A
+    from polysage.config import KB
+
+    f = KB["formulation"] / "智能体方案_测试.xlsx"
+    f.write_bytes(b"x" * 100)
+    text = ("# 方案\n\n| 料 | 价 |\n|---|---|\n| LL | 9670 |\n\n- 要点一\n\n导出：`05_配方库/智能体方案_测试.xlsx`，"
+            "还有 04_价格卡/不存在.xlsx")
+    found = A.referenced_files(text)
+    assert [p.name for p in found] == ["智能体方案_测试.xlsx"]        # 不存在的不列
+
+    doc = A.answer_to_docx(text, home / "ans.docx")
+    assert doc.exists() and doc.stat().st_size > 5000
+    from docx import Document
+
+    d = Document(str(doc))
+    assert any("方案" in p.text for p in d.paragraphs)
+    assert d.tables and d.tables[0].cell(0, 0).text == "料" and d.tables[0].cell(1, 1).text == "9670"
