@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.no_llm:
             inp["use_llm"] = False
         out = recommender.recommend(inp)
-        _print(f"模式：{out['mode']}｜现配方成本 {out['base_cost']:.0f}｜上限 {out['cost_limit']}")
+        _print(f"模式：{out['mode']}｜现配方成本 {pricing.cost_text(out['base_cost'])}｜上限 {out['cost_limit']}")
         for n in out["notes"]:
             _print("· " + n)
         df = pd.DataFrame([{"排名": x["rank"], "配方": x["formula"], "成本": x["cost"], "降本%": round(x["savings_pct"] or 0, 1),
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "price":
         res = pricing.record_price(a.code, a.price, a.type, source=a.source)
-        _print(f"已登记；base 成本 {res['base_cost']:.0f}；{res['n_flagged']} 个配方排名/成本明显变化；报告：{pricing.REPORT_PATH}")
+        _print(f"已登记；base 成本 {pricing.cost_text(res['base_cost'])}；{res['n_flagged']} 个配方排名/成本明显变化；报告：{pricing.REPORT_PATH}")
         return 0
     if a.cmd == "refresh":
         res = pricing.refresh_estimates(echo=_print)

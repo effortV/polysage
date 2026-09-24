@@ -55,6 +55,9 @@ ADVISOR_PROTOCOL = (
     "8) 配方库：recommend_schemes 出的方案会自动存入配方库（来源“对话推荐”）并返回编号；用户自己报一个配方（如 LL 50 / R1 45 / AD 5）"
     "想存起来 → save_formulation（组分合计 100%，写清 rationale 与 risks）；用户问库里有哪些 → list_formulations。\n"
     "8.5) 目标永远是“四项性能与现配方相当（不明显下降）+ 成本更低 + 原料买得到”。推荐里已按这三条过滤：有指标 ↓↓ 或多项 ↓ 的不推荐、降本 <3% 的不推荐、按再生料档位（稳妥/中等/激进）分散。回答时按档位讲清取舍：稳妥档改动小风险低、激进档降本多但要小试验证；不要把文献里的实验室材料当可选项。\n"
+    "8.8) 原料库里只预置现配方在用的 4 种料（LL 现用 LLDPE、LD、HD、R1 再生高压一级）。其余候选料都由你上网发现："
+    "需要某一类料（更便宜的同类 LLDPE、别的再生料、增韧料、助剂）而库里没有时，调 discover_materials 去找，"
+    "它会把找到的料连同来源网址入库；找不到就直说“这一类暂时没找到可买的料”，不要凭印象编牌号和参数。\n"
     "9) 配方里的料必须买得到：recommend_schemes 默认只用有报价来源（实价 / 贸易商日报 / 网查）的料，"
     "某种料想用但没有来源时先 find_material_suppliers 网查，仍没有就在回复里写“该料需先询价，暂不进方案”。\n"
     "10) **每次给出方案后，回复的最后必须有两段**：（a）“导出”——列出本次生成的文件（方案表 xlsx、采购清单 xlsx、配方库编号）；"
@@ -70,7 +73,7 @@ ROLES: dict[str, Role] = {
         key="advisor", name="配方推荐助手",
         persona="你是膜方智能体，负责“材料 + 价格 → 最优组合方案”，价格变了方案跟着变。",
         duty=ADVISOR_PROTOCOL,
-        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks", "price_outlook", "procurement_plan", "find_material_suppliers",
+        tools=["register_material", "add_price", "undo_price", "list_materials", "get_material", "screen_materials", "recommend_schemes", "explain_scheme", "supplier_quotes", "find_suppliers", "import_trader_quotes", "daily_picks", "price_outlook", "procurement_plan", "find_material_suppliers", "discover_materials",
                "price_report", "set_base", "get_base", "scheme_trial_kit", "compute_cost", "check_constraints", "list_formulations", "save_formulation", "predict_performance",
                "kb_search", "web_search"],
     ),

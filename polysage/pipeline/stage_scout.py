@@ -8,7 +8,7 @@ import pandas as pd
 
 from .. import db, kb, llm
 from ..config import KB
-from ..formulation.materials import SEED_MATERIALS, add_price, current_prices, list_materials, seed_materials, upsert_material
+from ..formulation.materials import add_price, current_prices, list_materials, seed_materials, upsert_material
 from ..ingest import ingest_hit
 from ..ingest.cards import make_material_card
 from ..sources import search_all
@@ -102,6 +102,8 @@ def estimate_price(code: str, name: str, query: str, echo: Callable[[str], None]
 
 
 def discover_new_materials(brief: str, echo: Callable[[str], None] | None = None) -> int:
+    """（已停用）早期让模型凭印象列候选料的做法：没有来源网址，材料真假不可查。
+    现在改走 polysage.scout.discover()——先搜网页、再从网页里抽料，每条带来源。保留本函数只为旧脚本兼容。"""
     report = kb.read_text(KB["project"] / "现配方机理报告.md")
     m = re.search(r"## 4[^\n]*\n(.*?)(?=\n## |\Z)", report, flags=re.S)
     space = m.group(1).strip() if m else "（机理报告尚未生成）"
@@ -131,9 +133,13 @@ def run(echo: Callable[[str], None] | None = None, *, codes: list[str] | None = 
     t = task.load()
     brief = task.brief(t)
     with state.running("scout", echo):
-        seed_materials()
+        seed_materials()                      # 只种现配方在用的 4 种料
         if discover:
-            discover_new_materials(brief, echo)
+            from .. import scout as _scout
+
+            out = _scout.discover("", depth="标准", max_new=8, echo=lambda msg: state.log(msg, echo))
+            state.log(f"智能体发现新料 {len(out['added'])} 种（每种都带来源网址）", echo)
+            # 不再让模型凭空列候选料：没有来源网址的材料不进原料库
         mats = [m for m in list_materials(active_only=False) if not codes or m["code"] in codes]
         mats = [m for m in mats if not str(m.get("use_flag", "")).startswith("否")]
         n_cards = n_prices = 0

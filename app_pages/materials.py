@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from polysage import db, pricing, ui
+from polysage import db, jobs, pricing, ui
 from polysage.config import KB, settings
 from polysage.formulation import constraints as C
 from polysage.formulation import cost as COST
@@ -21,7 +21,49 @@ tab_m, tab_p, tab_f, tab_g, tab_c = st.tabs(["原料库", "价格卡与回填", 
 
 def _render_tab_m() -> None:
     mats = MAT.list_materials(active_only=False)
-    st.caption("物性以供应商 TDS 为准；种子熔点为通用典型值，请按 TDS 校正。")
+    st.caption("原料库只预置现配方在用的 4 种料（LL / LD / HD / R1）；其余都由智能体上网找，每条带来源网址。"
+               "物性以供应商 TDS 为准。")
+    with ui.expander("智能体找新料", expanded=not any(m.get("source_url") for m in mats)):
+        g1, g2, g3, g4 = st.columns([4, 1, 1, 1])
+        goal = g1.text_input("想找什么", placeholder="留空按默认降本方向找：同类更便宜的 LLDPE / 再生料 / 增韧料 / 助剂",
+                             key="scout_goal")
+        sdepth = g2.selectbox("深度", ["快", "标准", "深"], index=0, key="scout_depth")
+        smax = g3.number_input("最多新增", 1, 20, 6, key="scout_max")
+        if g4.button("开始找", disabled=jobs.is_running(), key="scout_go"):
+            from polysage import scout
+
+            log = st.empty()
+            seen: list[str] = []
+            with st.spinner("上网找料中（一个方向约 1～2 分钟）…"):
+                try:
+                    out = scout.discover(goal, depth=sdepth, max_new=int(smax),
+                                         echo=lambda t: (seen.append(t), log.code("\n".join(seen[-8:])))[0])
+                    if out["added"]:
+                        st.success(f"新增 {len(out['added'])} 种料：" + "、".join(f"{a['code']} {a['name']}" for a in out["added"]))
+                    else:
+                        st.warning("这次没找到能入库的新料（页面里没有具体牌号或报价）。换个说法再试，或直接去「供应商与报价」按材料查。")
+                    for n in out["notes"][:5]:
+                        st.caption(n)
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"找料失败：{e}")
+            st.rerun()
+        found = [m for m in mats if m.get("source_url")]
+        if found:
+            st.dataframe(pd.DataFrame([{"代码": m["code"], "材料": m["name"], "牌号": m["grade"], "类别": m["category"],
+                                        "怎么来的": m.get("origin"), "发现时间": (m.get("discovered_at") or "")[:16],
+                                        "来源": m.get("source_url")} for m in found]),
+                         hide_index=True, column_config={"来源": st.column_config.LinkColumn("来源", width="medium")}, **ui.WIDE)
+        else:
+            st.caption("还没有智能体发现的料。")
+        if st.button("清理早期假设料（内部技术路线附录 D）", key="purge_assumed"):
+            from polysage.formulation import library as L
+
+            res = MAT.purge_assumed()
+            pur = L.purge_unbuyable()
+            st.success(f"删掉 {res['prices_deleted']} 条假设价、{len(res['removed'])} 种没有依据的料"
+                       + (f"（{'、'.join(res['removed'])}）" if res["removed"] else "")
+                       + f"；连带清掉 {pur if isinstance(pur, int) else len(pur)} 条用到它们的配方。")
+            st.rerun()
     df = pd.DataFrame([{"代码": m["code"], "类别": m["category"], "材料": m["name"], "牌号": m["grade"], "生产商": m.get("producer"), "供应商": m["supplier"],
                         "MFR": m["mfi"], "密度": m["density"], "熔点℃": m.get("melting_point"), "Vicat℃": m.get("vicat"), "共聚单体": m["comonomer"],
                         "落镖g(TDS)": m.get("tds_dart"), "热封起始℃(TDS)": m.get("tds_seal_init"), "需PPA": bool(m.get("needs_ppa") or 0),
@@ -75,7 +117,7 @@ def _render_tab_p() -> None:
         src = c4.text_input("来源（供应商 / 网站 + 日期）")
         if st.button("登记", disabled=price <= 0 or not src):
             res = pricing.record_price(code, price, ptype, source=src)
-            st.success(f"已登记并联动：现配方成本 {res['base_cost']:.0f}，{res['n_flagged']} 个配方成本/排名明显变化（见价格变动报告）")
+            st.success(f"已登记并联动：现配方成本 {pricing.cost_text(res['base_cost'])}，{res['n_flagged']} 个配方成本/排名明显变化（见价格变动报告）")
             st.rerun()
     with st.container(border=True):
         st.markdown("##### 询价清单回填")
@@ -84,7 +126,7 @@ def _render_tab_p() -> None:
         if up is not None and st.button("导入实价"):
             df_in = pd.read_excel(up) if up.name.endswith("xlsx") else pd.read_csv(up)
             res = pricing.import_actual_prices(df_in.to_dict("records"))
-            st.success(f"导入 {res['n_imported']} 条实价并联动：现配方成本 {res['base_cost']:.0f}，{res['n_flagged']} 个配方明显变化；到“智能体”页重新出方案")
+            st.success(f"导入 {res['n_imported']} 条实价并联动：现配方成本 {pricing.cost_text(res['base_cost'])}，{res['n_flagged']} 个配方明显变化；到“智能体”页重新出方案")
     with st.container(border=True):
         st.markdown("##### 价格联动")
         c1, c2 = st.columns([1, 2])

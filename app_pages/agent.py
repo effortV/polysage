@@ -111,7 +111,7 @@ def _render_tab_out() -> None:
     if not out:
         st.caption("还没有运行记录。")
     else:
-        st.caption(f"{out['at'][:16].replace('T', ' ')} · {out['mode']} · 现配方成本 {out['base_cost']:.0f} · 上限 {out['cost_limit']}")
+        st.caption(f"{out['at'][:16].replace('T', ' ')} · {out['mode']} · 现配方成本 {pricing.cost_text(out['base_cost'])} · 上限 {out['cost_limit']}")
         for n in out.get("notes", []):
             st.caption("· " + n)
         rows = []

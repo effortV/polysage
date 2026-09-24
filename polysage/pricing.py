@@ -71,6 +71,11 @@ def on_price_change(trigger: str, changed: list[dict[str, Any]] | None = None, b
     return {**summary, "moves": moves}
 
 
+def cost_text(v: float | None) -> str:
+    """成本可能算不出来（base 里某种料还没有价）：写清楚，别让格式化炸掉。"""
+    return f"{v:.0f}" if isinstance(v, (int, float)) else "未知（base 里有料还没有价）"
+
+
 def _write_report(summary: dict[str, Any], moves: list[dict[str, Any]]) -> None:
     lines = [f"# 价格变动报告（{summary['at']}）", "", f"触发：{summary['trigger']}", ""]
     if summary.get("changed_prices"):
@@ -78,7 +83,7 @@ def _write_report(summary: dict[str, Any], moves: list[dict[str, Any]]) -> None:
         for ch in summary["changed_prices"]:
             lines.append(f"- {ch.get('code')}：{ch.get('old')} → {ch.get('new')} 元/吨（{ch.get('type')}，{ch.get('source', '')}）")
         lines.append("")
-    lines += [f"base 成本：{summary['base_cost']:.0f} 元/吨；成本上限：{summary['cost_limit']}", "",
+    lines += [f"base 成本：{cost_text(summary['base_cost'])} 元/吨；成本上限：{summary['cost_limit']}", "",
               "## 排名变化（标记：成本变动 ≥ 100 元/吨 或 排名变动 ≥ 3 位）", "",
               "| 配方 | 成本(前) | 成本(后) | 排名(前) | 排名(后) | 标记 |", "|---|---|---|---|---|---|"]
     for m in sorted(moves, key=lambda x: x["rank_after"]):

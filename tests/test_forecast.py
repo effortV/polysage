@@ -8,6 +8,8 @@ from datetime import date
 from polysage import db, forecast as F, llm
 from polysage.formulation import materials as MAT
 
+from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
+
 
 def test_next_contracts():
     assert F.next_contracts(date(2026, 9, 21), 2) == ["L2701", "L2705"]
@@ -16,6 +18,7 @@ def test_next_contracts():
 
 def test_futures_signal_and_blend(monkeypatch, home):
     MAT.seed_materials()
+    seed_candidates()
     closes = [8000 + i * 10 for i in range(90)]  # 稳步上涨
     main = [{"d": f"2026-06-{(i % 28) + 1:02d}", "close": c, "settle": c} for i, c in enumerate(closes)]
     curve = {"L2701": [{"d": "x", "close": 8900, "settle": 8900}], "L2705": [{"d": "x", "close": 9100, "settle": 9100}]}
@@ -42,6 +45,7 @@ def test_futures_signal_and_blend(monkeypatch, home):
 
 def test_build_survives_model_failure(monkeypatch, home):
     MAT.seed_materials()
+    seed_candidates()
     monkeypatch.setattr(F, "market_news", lambda family, limit=3: [])
     monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: (_ for _ in ()).throw(RuntimeError("down")))
     rec = F.build("HDPE", futures={"ok": False, "reason": "无网络"})

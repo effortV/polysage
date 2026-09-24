@@ -7,10 +7,13 @@ from polysage import db, llm, pricing, sourcing
 from polysage.formulation import materials as MAT
 from polysage.sources.base import SearchHit
 
+from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
+
 
 @pytest.fixture
 def fake_net(monkeypatch):
     MAT.seed_materials()
+    seed_candidates()
     hits = [SearchHit(provider="duckduckgo", external_id=f"u{i}", title=f"LLDPE 7042 报价 {i}", source_type="web",
                       url=f"https://www.1688.com/offer/{i}.html", abstract="") for i in range(3)]
     monkeypatch.setattr(sourcing, "web_search", lambda q, limit=8, bing_first=False: hits)

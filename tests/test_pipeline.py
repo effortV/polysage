@@ -12,6 +12,8 @@ from polysage import db, kb
 from polysage.config import KB
 from polysage.pipeline import runner, stage_experiment, state, task
 
+from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
+
 
 def test_discovery_pipeline(fake_llm, fake_sources):
     res = runner.run_discovery(resume=False, echo=None, max_hits_per_query=3, max_keep=40, do_prices=True)
@@ -40,6 +42,7 @@ def test_experiment_loop(fake_llm, fake_sources):
     from polysage.ml import dataset as D
 
     MAT.seed_materials()
+    seed_candidates()
     seed_library()
     design = stage_experiment.doe_round1(priority=[f["comps"] for f in L.SEED_TOP20[:6]])
     df_design = pd.read_excel(design, sheet_name="试验配方")

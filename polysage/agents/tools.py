@@ -216,7 +216,9 @@ def recommend_schemes(materials: list[dict] | None = None, only_listed_materials
 
     out = recommender.recommend({"materials": materials or [], "only_listed_materials": only_listed_materials, "n_schemes": n_schemes,
                                  "use_llm": use_llm, "save_to_library": True, "origin": "对话推荐"})
-    lines = [f"模式：{out['mode']}；现配方成本 {out['base_cost']:.0f}，上限 {out['cost_limit']}"] + [f"· {n}" for n in out["notes"]]
+    from .. import pricing as _pr
+
+    lines = [f"模式：{out['mode']}；现配方成本 {_pr.cost_text(out['base_cost'])}，上限 {out['cost_limit']}"] + [f"· {n}" for n in out["notes"]]
     for s in out["schemes"]:
         ml = s.get("ml") or {}
         lines.append(f"{s['rank']}. [{s['theme']}｜{s.get('bucket') or '-'}] {s['formula']} | 成本 {s['cost']}（{s['cost_tier']}）| 降本 {s['savings_pct']:.1f}% | "
@@ -267,7 +269,7 @@ def register_material(material: dict, similar_to: str | None = None):
     msg = f"已登记材料 {code}（{data.get('name')}）{note}"
     if price not in (None, ""):
         res = pricing.record_price(code, float(price), ptype, source=psrc, supplier=str(m.get("supplier") or ""))
-        msg += (f"；价格 {float(price):.0f} 元/吨（{ptype}，{psrc}）已联动：现配方成本 {res['base_cost']:.0f}，"
+        msg += (f"；价格 {float(price):.0f} 元/吨（{ptype}，{psrc}）已联动：现配方成本 {pricing.cost_text(res['base_cost'])}，"
                 f"{res['n_flagged']} 个配方成本/排名明显变化")
     return msg, []
 
@@ -306,7 +308,7 @@ def undo_price(code: str, price_type: str | None = None):
     res = pricing.undo_last_price(code, price_type)
     if not res:
         return f"{code} 没有可撤销的价格记录", []
-    return f"已撤销 {code} 的最近一条 {res['deleted']['price_type']} 价 {res['deleted']['price']}；现配方成本 {res['base_cost']:.0f}，{res['n_flagged']} 个配方明显变化", []
+    return f"已撤销 {code} 的最近一条 {res['deleted']['price_type']} 价 {res['deleted']['price']}；现配方成本 {pricing.cost_text(res['base_cost'])}，{res['n_flagged']} 个配方明显变化", []
 
 
 @tool("scheme_trial_kit", "为某个推荐方案生成试验包：称料单（按批次公斤数）+ 预填配方的数据表模板，保存到 06_实验数据。",
@@ -442,6 +444,28 @@ def find_material_suppliers(codes: list[str], depth: str = "快", apply_estimate
     return "\n".join(lines) or "没有结果。", []
 
 
+@tool("discover_materials", "上网找现在原料库里还没有的新料（更便宜的同类树脂、再生料、增韧料、助剂），"
+      "抽成材料卡入库并带上来源网址；查到报价的顺手写成估计价。原料库只预置现配方在用的 4 种料，别的都靠这个发现。",
+      {"goal": {"type": "string", "description": "想找什么，例如“更便宜的国产茂金属 LLDPE”；留空按默认降本方向找"},
+       "depth": {"type": "string", "enum": ["快", "标准", "深"]},
+       "max_new": {"type": "integer", "description": "这次最多新增几种料（默认 6）"}}, [])
+def discover_materials(goal: str = "", depth: str = "快", max_new: int = 6):
+    from .. import scout
+
+    out = scout.discover(goal, depth=depth, max_new=max_new)
+    lines = [f"{a['code']} {a['name']}（{a['grade'] or '无牌号'}，{a['category']}）"
+             + (f"，网查价 {a['price']:.0f} 元/吨" if a.get("price") else "，暂无报价（需询价）")
+             + f"｜来源 {a['url'][:70]}" for a in out["added"]]
+    if not lines:
+        lines = [f"这次没找到新料（{out['goal']}）。不要再换关键词反复找：用库里现有的料出方案，"
+                 "并说明还缺哪一类料、建议去问哪种供应商。"]
+    else:
+        lines.append("新料已入原料库（标记“待评估”，来源网址已存）。有报价的才会进推荐，没报价的要先询价。")
+    for n in out["notes"][:4]:
+        lines.append(f"· {n}")
+    return "\n".join(lines), []
+
+
 @tool("daily_picks", "查看最近一次贸易商日报里每类树脂（LLDPE/LDPE/HDPE）的最低到厂价与次选。", {})
 def daily_picks():
     from .. import daily_quotes
@@ -482,7 +506,7 @@ def add_price(code: str, price: float, price_type: str, source: str, url: str = 
     from .. import pricing
 
     res = pricing.record_price(code, price, price_type, source=source, url=url, price_date=price_date, supplier=supplier, note=note)
-    return (f"已登记 {code} {price_type} 价 {price} 元/吨；现配方成本 {res['base_cost']:.0f}；{res['n_flagged']} 个配方成本/排名明显变化；"
+    return (f"已登记 {code} {price_type} 价 {price} 元/吨；现配方成本 {pricing.cost_text(res['base_cost'])}；{res['n_flagged']} 个配方成本/排名明显变化；"
             f"最便宜前 3：{[(t['code'], round(t['cost'])) for t in res['top5'][:3]]}；报告 {pricing.REPORT_PATH.name}"), []
 
 

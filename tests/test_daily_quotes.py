@@ -5,6 +5,8 @@ from polysage import daily_quotes as D
 from polysage import db, llm, pricing
 from polysage.formulation import materials as MAT
 
+from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
+
 
 def test_freight_and_ranks():
     assert D.freight_for("杭州") == 100 and D.freight_for("太仓") == 150 and D.freight_for("青岛") == 350
@@ -16,6 +18,7 @@ def test_freight_and_ranks():
 
 def test_parse_save_and_apply(monkeypatch, home):
     MAT.seed_materials()
+    seed_candidates()
 
     def fake_json(messages, **kw):
         assert "报价商：贸易商B" in messages[-1]["content"]
@@ -60,6 +63,7 @@ def test_web_market_quotes_keeps_only_fresh_pages(monkeypatch, home):
     import polysage.sources.websearch as W
 
     MAT.seed_materials()
+    seed_candidates()
     today = date.today()
     fresh = (today - timedelta(days=3)).isoformat()
     stale = (today - timedelta(days=40)).isoformat()

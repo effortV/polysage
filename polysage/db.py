@@ -285,6 +285,9 @@ MATERIAL_EXTRA_COLUMNS: dict[str, str] = {
     "needs_ppa": "INTEGER",
     "availability": "TEXT",
     "price_note": "TEXT",
+    "origin": "TEXT",              # 怎么进来的：现配方在用 / 智能体发现 / 手工登记
+    "source_url": "TEXT",          # 发现它的那个网页
+    "discovered_at": "TEXT",
 }
 
 

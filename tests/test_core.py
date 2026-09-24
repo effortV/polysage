@@ -14,10 +14,13 @@ from polysage.formulation import generator as G
 from polysage.formulation import library as L
 from polysage.formulation import materials as MAT
 
+from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
+
 
 @pytest.fixture(autouse=True)
 def _seed():
     MAT.seed_materials()
+    seed_candidates()
     seed_library()
 
 

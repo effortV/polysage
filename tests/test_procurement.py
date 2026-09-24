@@ -8,6 +8,8 @@ from polysage import db, llm, pricing, procurement as P
 from polysage.formulation import materials as MAT
 from polysage.sources.base import SearchHit
 
+from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
+
 
 def _clear_actuals(*codes: str) -> None:
     """其他测试可能给这些料留下实价，采购方案的来源优先级测试需要干净起点。"""
@@ -18,6 +20,7 @@ def _clear_actuals(*codes: str) -> None:
 
 def test_best_source_priority_and_plan(monkeypatch, home):
     MAT.seed_materials()
+    seed_candidates()
     _clear_actuals("LL", "LLC", "LD", "HD", "R1", "AD", "POE")
     today = date.today().isoformat()
     # 日报：LL/LLC 9670；辅料 R1 网查 7600
@@ -53,6 +56,7 @@ def test_best_source_priority_and_plan(monkeypatch, home):
 
 def test_missing_price_is_flagged(monkeypatch, home):
     MAT.seed_materials()
+    seed_candidates()
     MAT.upsert_material({"code": "ZZZ", "name": "没价格的料", "category": "功能助剂", "active": 1})
     plan = P.plan({"LL": 99, "ZZZ": 1})
     assert plan["missing"] == ["ZZZ"] and plan["total"] is None
@@ -61,6 +65,7 @@ def test_missing_price_is_flagged(monkeypatch, home):
 
 def test_material_web_sourcing(monkeypatch, home):
     MAT.seed_materials()
+    seed_candidates()
     import polysage.sources.fetch as F
     import polysage.sources.websearch as W
 
@@ -90,6 +95,7 @@ def test_material_extraction_accepts_market_tables(monkeypatch, home):
     from datetime import date
 
     MAT.seed_materials()
+    seed_candidates()
     today = date.today()
     monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
         {"supplier": "山东再生PE市场", "kind": "行情", "region": "山东", "grade": "EVA白色透明一级颗粒", "price": 5300, "tax_included": True,
@@ -109,6 +115,7 @@ def test_quality_filter_drops_unusable_grades(monkeypatch, home):
     from datetime import date
 
     MAT.seed_materials()
+    seed_candidates()
     monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
         {"supplier": "东北再生高压市场", "kind": "行情", "region": "东北", "grade": "白色略发黄大棚膜一级颗粒", "price": 4400, "evidence": "大棚膜料 4400"},
         {"supplier": "广东再生高压市场", "kind": "行情", "region": "广东", "grade": "高压白透明一级造粒", "price": 6300, "evidence": "白透明一级 6300"},
@@ -126,6 +133,7 @@ def test_library_carries_sourcing_and_recommend_uses_buyable(monkeypatch, home):
     from polysage.formulation import library as L
 
     MAT.seed_materials()
+    seed_candidates()
     _clear_actuals("LL", "LLC", "R1", "AD")
     monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"quotes": [
         {"family": "LLDPE", "producer": "华泰", "grade": "7042", "warehouse": "杭州", "delivery": "现货", "price": 9520, "tax_included": True}]})
@@ -155,6 +163,7 @@ def test_library_rejects_unbuyable_formulations(monkeypatch, home):
     from polysage.formulation import library as L
 
     MAT.seed_materials()
+    seed_candidates()
     _clear_actuals("LL", "LLC", "R1", "AD", "POE")
     for f in L.list_formulations():                      # 其他测试留下的配方不影响本例
         if f["code"] in ("OK1", "OK2", "BAD1"):
