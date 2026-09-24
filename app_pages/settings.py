@@ -33,12 +33,28 @@ def _set_env(pairs: dict[str, str]) -> None:
 with st.container(border=True):
     st.markdown("##### 对话模型")
     st.caption("两套 OpenAI 兼容接口可切换；向量与重排固定使用 SiliconFlow bge-m3。")
-    profile = st.radio("当前使用", ["siliconflow", "zju"], index=0 if settings.llm_profile != "zju" else 1, horizontal=True,
-                       format_func={"siliconflow": f"SiliconFlow · {settings.sf_chat_model}", "zju": f"ZJU · {settings.zju_chat_model}"}.get)
-    if profile != settings.llm_profile and st.button("切换到该模型"):
-        _set_env({"LLM_PROFILE": profile})
-        st.success(f"已切换为 {profile}")
-        st.rerun()
+    label = {"siliconflow": f"SiliconFlow · {settings.sf_chat_model}", "zju": f"ZJU · {settings.zju_chat_model}"}
+    has_key = {"siliconflow": bool(settings.sf_api_key), "zju": bool(settings.zju_api_key)}
+    cur = settings.llm_profile if settings.llm_profile in label else "siliconflow"
+    st.caption(f"当前生效：**{label[cur]}**")
+    pick = st.radio("当前使用", ["siliconflow", "zju"], index=["siliconflow", "zju"].index(cur), horizontal=True,
+                    key="llm_profile_pick", format_func=lambda k: label[k] + ("" if has_key[k] else "（未配密钥）"))
+    if pick != cur:                       # 选了就立刻生效，不用再点一次按钮
+        if not has_key[pick]:
+            st.error(f"{label[pick]} 还没有配密钥，先在下面填好再切。")
+        else:
+            _set_env({"LLM_PROFILE": pick})
+            st.success(f"已切换到 {label[pick]}")
+            st.rerun()
+    if st.button("试一句（测延迟）", key="llm_ping"):
+        import time as _t
+
+        t0 = _t.time()
+        try:
+            r = llm.chat([{"role": "user", "content": "用一句话说明 LLDPE 与 LDPE 的区别"}], max_tokens=120, thinking=False)
+            st.success(f"{label[cur]} 用时 {_t.time() - t0:.0f} 秒：{r.content[:80]}")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"{label[cur]} 调用失败（{_t.time() - t0:.0f} 秒）：{str(e)[:200]}")
     c_sf, c_zju = st.columns(2)
     with c_sf:
         st.markdown("###### SiliconFlow")

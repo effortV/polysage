@@ -151,3 +151,28 @@ def test_reasoning_is_not_used_as_answer(monkeypatch):
         "choices": [{"message": {"content": "", "reasoning_content": "Hmm..."}, "finish_reason": "stop"}]})
     res = llm.chat([{"role": "user", "content": "出方案"}], max_tokens=500)
     assert res.content == "" and "Hmm" not in res.content
+
+
+def test_truncated_answer_is_continued(monkeypatch):
+    """被 max_tokens 掐断（finish_reason=length）时接着写完，而不是给用户半张表。"""
+    monkeypatch.setattr(settings, "sf_api_key", "fake")
+    monkeypatch.setattr(settings, "llm_profile", "siliconflow")
+    calls = {"n": 0}
+
+    def fake_chat(messages, **kw):
+        calls["n"] += 1
+        assert "tools" not in kw                       # 续写时不该再带工具
+        if calls["n"] == 1:
+            return llm.ChatResult(content="| 排名 | 配方 | 成本 |\n| 1 | LL 20 / R1 50 |", finish_reason="length")
+        if calls["n"] == 2:
+            return llm.ChatResult(content=" 6800 |\n| 2 | LL 25 / R1 45 |", finish_reason="length")
+        return llm.ChatResult(content=" 6900 |\n\n以上为完整表格。", finish_reason="stop")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    first = fake_chat([{"role": "user", "content": "给我表格"}])
+    res = llm.continue_if_truncated(first, [{"role": "user", "content": "给我表格"}], max_tokens=100)
+    assert res.content.endswith("以上为完整表格。") and "6800" in res.content and "6900" in res.content
+    assert res.finish_reason == "stop" and calls["n"] == 3
+
+    done = llm.ChatResult(content="写完了。", finish_reason="stop")
+    assert llm.continue_if_truncated(done, [{"role": "user", "content": "x"}]).content == "写完了。"

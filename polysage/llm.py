@@ -254,20 +254,47 @@ def other_profile() -> str | None:
     return other if key else None
 
 
+ANSWER_MAX_TOKENS = 6000          # 最终作答：Top10 表格 + 采购清单，3000 根本不够
+
+
+def continue_if_truncated(res: "ChatResult", messages: list[dict[str, Any]], *, rounds: int = 3, **kw: Any) -> "ChatResult":
+    """模型是被 max_tokens 掐断的（finish_reason=length）：接着写完，别让用户看半张表。"""
+    kw = {k: v for k, v in kw.items() if k not in ("tools", "tool_choice")}
+    out = res
+    for _ in range(rounds):
+        if (out.finish_reason or "") != "length" or not out.content.strip():
+            break
+        msgs = list(messages) + [
+            {"role": "assistant", "content": out.content[-4000:]},
+            {"role": "system", "content": "上面这段回答被长度限制截断了。请紧接着最后一个字继续写完，"
+                                          "不要重复已经写过的内容、不要重新开头、不要写“继续”之类的过渡语。"},
+        ]
+        try:
+            nxt = chat(msgs, **kw)
+        except LLMError:
+            break
+        if not nxt.content.strip():
+            break
+        out = ChatResult(content=out.content + nxt.content, tool_calls=None, usage=nxt.usage,
+                         finish_reason=nxt.finish_reason, raw=nxt.raw)
+    return out
+
+
 def chat_answer(messages: list[dict[str, Any]], **kw: Any) -> ChatResult:
     """要一个“有内容的回答”：当前模型空手而回时换一种问法，再不行换另一个模型。
 
     ZJU（vLLM）偶尔会在工具调用之后返回空 content，直接显示给用户就是“没有输出”。
     """
+    kw.setdefault("max_tokens", ANSWER_MAX_TOKENS)
     res = chat(messages, **kw)
     if res.content.strip():
-        return res
+        return continue_if_truncated(res, messages, **kw)
     nudge = list(messages) + [{"role": "system", "content": "上一次没有输出内容。现在不要调用工具，直接用中文给出完整结论。"}]
     kw2 = {k: v for k, v in kw.items() if k not in ("tools", "tool_choice")}
     kw2["thinking"] = False
     res = chat(nudge, **kw2)
     if res.content.strip():
-        return res
+        return continue_if_truncated(res, nudge, **kw2)
     other = other_profile()
     if other:
         cur = settings.llm_profile

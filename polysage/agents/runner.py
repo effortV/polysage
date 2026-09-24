@@ -226,7 +226,7 @@ def _run_turn(session_id: int, *, max_steps: int = 8,
             res = llm.chat_answer([sys_msg, *history,
                                    {"role": "system", "content": "这一轮已经跑了很久，用户在等结果。现在不要再调用工具，"
                                                                  "用已有信息直接给出完整结论与表格；查不到的写明“需询价 / 待验证”并给出你的判断与假设。"}],
-                                  temperature=0.3, max_tokens=3000, thinking=False)
+                                  temperature=0.3, max_tokens=llm.ANSWER_MAX_TOKENS, thinking=False)
         else:
             res = llm.chat([sys_msg, *history], tools=T.schemas(role.tools), tool_choice="auto", temperature=0.3, max_tokens=4096, thinking=False)
         if res.tool_calls and steps < max_steps:
@@ -269,10 +269,13 @@ def _run_turn(session_id: int, *, max_steps: int = 8,
                 _add(session_id, "tool", "（已达到本轮工具调用上限，未执行）请基于已有信息直接回答。", tool_call_id=tc["id"], name=tc["name"])
             history = _to_api(messages(session_id))
             res = llm.chat_answer([sys_msg, *history, {"role": "system", "content": "工具调用已达上限，不要再查了，现在直接作答：给出完整结论与表格，证据不足处写明“待验证 / 需询价”，并说明你用的假设。"}],
-                                  temperature=0.3, max_tokens=3000, thinking=False)
+                                  temperature=0.3, max_tokens=llm.ANSWER_MAX_TOKENS, thinking=False)
         if not (res.content or "").strip():
             # 模型调完工具后空手而回：换问法/换模型再要一次结论
-            res = llm.chat_answer([sys_msg, *history], temperature=0.3, max_tokens=4096, thinking=False)
+            res = llm.chat_answer([sys_msg, *history], temperature=0.3, max_tokens=llm.ANSWER_MAX_TOKENS, thinking=False)
+        # 被 max_tokens 掐断的（半张表、半句话）接着写完
+        res = llm.continue_if_truncated(res, [sys_msg, *history], temperature=0.3,
+                                        max_tokens=llm.ANSWER_MAX_TOKENS, thinking=False)
         content = res.content or "（模型未返回内容）"
         _add(session_id, "assistant", content, citations=citations)
         if on_event:
