@@ -134,7 +134,8 @@ def test_ml_roundtrip(home):
         add(r["sample_id"], {k: float(r[k]) for k in D.COMP_COLS if k in r})
     df = pd.DataFrame(rows)
     D.save(df)
-    assert D.qc(df) == []
+    # 数据是随机生成的，偶尔会有一条 |z|>3 的点——那是质检在干活，不是数据表有结构问题
+    assert [i for i in D.qc(df) if "异常值" not in i] == []
     reports, summary = M.train_all(df)
     assert {r.target for r in reports} == set(D.PRIMARY_TARGETS)
     assert all(r.metrics for r in reports)

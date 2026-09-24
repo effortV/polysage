@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import re
-
 import time
 
 from typing import Any
@@ -60,6 +59,65 @@ _BING_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML
 _BING_FRESH = {"d": "ez1", "w": "ez2", "m": "ez3"}
 
 
+_FRESH_BOCHA = {"d": "oneDay", "w": "oneWeek", "m": "oneMonth", "y": "oneYear"}
+
+
+def _bocha(query: str, limit: int, timelimit: str | None = None, timeout: float = 20.0) -> list[SearchHit]:
+    """博查搜索 API（国内，按次计费）：返回中文站点的标题 / 网址 / 摘要 / 发布时间。"""
+    payload: dict[str, Any] = {"query": query, "count": min(max(limit, 5), 20), "summary": True}
+    if timelimit in _FRESH_BOCHA:
+        payload["freshness"] = _FRESH_BOCHA[timelimit]
+    with net.client("https://api.bochaai.com", timeout=timeout) as c:
+        r = c.post("https://api.bochaai.com/v1/web-search", json=payload,
+                   headers={"Authorization": f"Bearer {settings.bocha_api_key}", "Content-Type": "application/json"})
+    if r.status_code >= 400:
+        raise RuntimeError(f"bocha {r.status_code}：{r.text[:80]}")
+    pages = (((r.json() or {}).get("data") or {}).get("webPages") or {}).get("value") or []
+    hits = []
+    for it in pages[:limit]:
+        url = it.get("url") or ""
+        if not url.startswith("http"):
+            continue
+        st, cred = _classify(url)
+        hits.append(SearchHit(provider="bocha", external_id=url, title=(it.get("name") or "")[:120], source_type=st, url=url,
+                              abstract=(it.get("summary") or it.get("snippet") or "")[:500], credibility=cred,
+                              year=_year_of(it.get("datePublished") or it.get("dateLastCrawled") or "")))
+    if not hits:
+        raise RuntimeError("bocha 无结果")
+    return hits
+
+
+def _zhipu(query: str, limit: int, timelimit: str | None = None, timeout: float = 20.0) -> list[SearchHit]:
+    """智谱开放平台的 Web Search API（国内）。"""
+    payload = {"search_engine": "search_std", "search_query": query, "count": min(max(limit, 5), 20)}
+    if timelimit in ("d", "w", "m", "y"):
+        payload["search_recency_filter"] = {"d": "oneDay", "w": "oneWeek", "m": "oneMonth", "y": "oneYear"}[timelimit]
+    with net.client("https://open.bigmodel.cn", timeout=timeout) as c:
+        r = c.post("https://open.bigmodel.cn/api/paas/v4/web_search", json=payload,
+                   headers={"Authorization": f"Bearer {settings.zhipu_api_key}", "Content-Type": "application/json"})
+    if r.status_code >= 400:
+        raise RuntimeError(f"zhipu {r.status_code}：{r.text[:80]}")
+    data = r.json() or {}
+    rows = data.get("search_result") or data.get("data") or []
+    hits = []
+    for it in rows[:limit]:
+        url = it.get("link") or it.get("url") or ""
+        if not url.startswith("http"):
+            continue
+        st, cred = _classify(url)
+        hits.append(SearchHit(provider="zhipu", external_id=url, title=(it.get("title") or "")[:120], source_type=st, url=url,
+                              abstract=(it.get("content") or it.get("snippet") or "")[:500], credibility=cred,
+                              year=_year_of(it.get("publish_date") or "")))
+    if not hits:
+        raise RuntimeError("zhipu 无结果")
+    return hits
+
+
+def _year_of(text: str) -> int | None:
+    m = re.search(r"(20\d{2})", str(text or ""))
+    return int(m.group(1)) if m else None
+
+
 def _bing_html(query: str, limit: int, timelimit: str | None = None, timeout: float = 12.0) -> list[SearchHit]:
     """直接解析 cn.bing.com 结果页：服务器（无代理）上 ddgs 的 bing 后端常失败，这个最稳；timelimit d/w/m 对应必应的时间筛选。"""
     from urllib.parse import quote
@@ -101,6 +159,67 @@ def _relevant(query: str, hits: list[SearchHit], min_ratio: float = 0.3) -> bool
         return True
     ok = sum(1 for h in hits if any(t in (h.title + " " + h.abstract) for t in toks))
     return ok >= max(1, int(len(hits) * min_ratio))
+
+
+_UA_MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+              "Version/17.0 Mobile/15E148 Safari/604.1")
+_BAIDU_MU = re.compile(r'"mu"\s*:\s*"([^"]+)"')
+_BAIDU_SKIP = ("recommend_list.baidu.com", "m.baidu.com/from=", "baidu.com/search", "/sf?")
+
+
+def _baidu_html(query: str, limit: int, timelimit: str | None = None, timeout: float = 12.0) -> list[SearchHit]:
+    """百度移动版：结果项的真实网址在 data-log 的 mu 字段里。
+
+    服务器这个 IP 上必应会降级（只按第一个词返回百科）、搜狗 403、360 要验证码，百度移动版还能出正常结果，
+    而且出来的多是 1688 / 百度爱采购这类带报价和厂家的页面，正合用。
+    """
+    import json
+    from urllib.parse import quote
+
+    from bs4 import BeautifulSoup
+
+    url = f"https://m.baidu.com/s?word={quote(query)}"
+    if timelimit in ("d", "w", "m", "y"):
+        days = {"d": 1, "w": 7, "m": 31, "y": 365}[timelimit]
+        end = int(time.time())
+        url += f"&gpc=stf%3D{end - days * 86400}%2C{end}%7Cstftype%3D1"
+    # 头要像真手机浏览器：httpx 默认的 accept/user-agent 会被百度判成机器人（返回“百度安全验证”）
+    headers = {"User-Agent": _UA_MOBILE, "Accept-Language": "zh-CN,zh;q=0.9",
+               "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+               "Accept-Encoding": "gzip, deflate, br"}
+    with net.client(url, timeout=timeout, follow_redirects=True, headers=headers) as c:
+        c.get("https://m.baidu.com/")                           # 先拿一次 cookie，直接搜会被挡
+        r = c.get(url, headers={"Referer": "https://m.baidu.com/"})
+    if r.status_code >= 400:
+        raise RuntimeError(f"baidu {r.status_code}")
+    soup = BeautifulSoup(r.text, "lxml")
+    hits: list[SearchHit] = []
+    for it in soup.select("div.c-result"):
+        log = it.get("data-log") or ""
+        href = ""
+        if log:
+            try:
+                href = (json.loads(log) or {}).get("mu") or ""
+            except (ValueError, TypeError):
+                m = _BAIDU_MU.search(log)
+                href = m.group(1) if m else ""
+        if not href.startswith("http") or any(k in href for k in _BAIDU_SKIP):
+            continue
+        t = it.select_one("[class*=title], h3, .c-title")
+        title = t.get_text(" ", strip=True) if t else ""
+        body = it.get_text(" ", strip=True)
+        if title and body.startswith(title):
+            body = body[len(title):]
+        st, cred = _classify(href)
+        hits.append(SearchHit(provider="baidu", external_id=href, title=title[:120], source_type=st, url=href,
+                              abstract=body[:300], credibility=cred))
+        if len(hits) >= limit:
+            break
+    if not hits:
+        raise RuntimeError("baidu 无结果")
+    if not _relevant(query, hits):
+        raise RuntimeError("baidu 疑似降级结果")
+    return hits
 
 
 _SOGOU_FRESH = {"d": "1", "w": "2", "m": "3"}
@@ -223,17 +342,23 @@ def search(query: str, limit: int = 10, region: str = "cn-zh", *, bing_first: bo
 
 
 def _search(query: str, limit: int, region: str, bing_first: bool = False, timelimit: str | None = None) -> list[SearchHit]:
-    """必应 → 搜狗 → 360（都是自带解析，直连、各 ~10 s）；ddgs 那套在国内服务器上基本不通，
+    """必应 → 百度移动 → 搜狗 → 360（都是自带解析，直连、各 ~10 s）；ddgs 那套在国内服务器上基本不通，
     只有环境变量 WEBSEARCH_USE_DDGS=1 时才兜底，免得一条查询卡好几分钟。"""
     import os
 
-    if settings.tavily_api_key:
-        try:
-            return _tavily(query, limit)
-        except Exception:  # noqa: BLE001
-            pass
     errors: list[str] = []
+    # 有搜索 API 的 key 就先走 API：服务器 IP 上免费引擎被降级/封禁时，这是唯一稳的路
+    for name, key, fn in (("tavily", settings.tavily_api_key, lambda: _tavily(query, limit)),
+                          ("bocha", settings.bocha_api_key, lambda: _bocha(query, limit, timelimit)),
+                          ("zhipu", settings.zhipu_api_key, lambda: _zhipu(query, limit, timelimit))):
+        if not key:
+            continue
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{name}:{str(e)[:40]}")
     for name, fn in (("bing", lambda: _bing_html(query, limit, timelimit)),
+                     ("baidu", lambda: _baidu_html(query, limit, timelimit)),
                      ("sogou", lambda: _sogou_html(query, limit, timelimit)),
                      ("360", lambda: _so360_html(query, limit))):
         try:
@@ -245,4 +370,7 @@ def _search(query: str, limit: int, region: str, bing_first: bool = False, timel
             return _ddg(query, limit, region, BING_FIRST_CHAIN if bing_first else DEFAULT_CHAIN, timelimit)
         except Exception as e:  # noqa: BLE001
             errors.append(f"ddgs:{str(e)[:40]}")
-    raise RuntimeError("网页搜索无结果（" + "；".join(errors) + "）")
+    hint = ""
+    if not (settings.bocha_api_key or settings.zhipu_api_key or settings.tavily_api_key):
+        hint = "。免费引擎对这台服务器的 IP 要么降级要么要验证码，想稳定检索就在 .env 里配一个搜索 API 的 key（BOCHA_API_KEY 或 ZHIPU_API_KEY）后重启"
+    raise RuntimeError("网页搜索无结果（" + "；".join(errors) + "）" + hint)

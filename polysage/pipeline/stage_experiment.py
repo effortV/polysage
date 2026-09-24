@@ -20,7 +20,25 @@ from . import state, task
 
 DESIGN_PATH = KB["experiment"] / "首轮试验方案.xlsx"
 RECO_PATH = KB["experiment"] / "推荐配方.xlsx"
-VARIABLES = ["LL", "LLC", "mLL", "LD", "HD", "R1", "RL", "POE"]
+# 试验设计的变量：现配方在用的料 + 原料库里已有的候选料（智能体发现的也在内），不再写死一份清单
+VARIABLES = ["LL", "LLC", "mLL", "LD", "HD", "R1", "RL", "POE"]      # 缺省顺序，实际用 variables()
+
+
+def variables(max_n: int = 8) -> list[str]:
+    """现配方那几种料必进；其余按“有价可算、能记数据”的候选料补齐到 max_n 个。"""
+    from ..formulation import constraints as C
+    from ..formulation.materials import BASE_CODES, current_prices, list_materials
+    from ..ml.dataset import refresh_comp_cols
+
+    COMP_COLS = refresh_comp_cols()
+    base = [c for c in (list(C.base_formulation()) or list(BASE_CODES))]
+    prices = current_prices()
+    rest = [m["code"] for m in list_materials(active_only=True)
+            if m["code"] not in base and m["code"] in COMP_COLS            # 数据表里有这一列才排得进试验
+            and not str(m.get("use_flag") or "").startswith("否")
+            and (prices.get(m["code"], {}).get("actual") is not None or prices.get(m["code"], {}).get("estimate") is not None)]
+    rest.sort(key=lambda c: prices.get(c, {}).get("actual") or prices.get(c, {}).get("estimate") or 1e9)
+    return base + rest[:max(0, max_n - len(base))]
 
 REVIEW_RECO_PROMPT = (
     "任务：{brief}\n\n模型扫描候选空间后给出下列推荐（利用型 = 预测过关且便宜；探索型 = 不确定度大但可能更便宜）。"
@@ -39,8 +57,9 @@ REVIEW_ROUND_PROMPT = (
 
 def doe_round1(priority: list[dict[str, float]] | None = None, n_points: int = 24, echo: Callable[[str], None] | None = None) -> Path:
     t = task.load()
-    design = DOE.first_round(n_points=n_points, variables=VARIABLES, priority=priority or [])
-    cov = DOE.coverage_report(design, VARIABLES)
+    vars_ = variables()
+    design = DOE.first_round(n_points=n_points, variables=vars_, priority=priority or [])
+    cov = DOE.coverage_report(design, vars_)
     with pd.ExcelWriter(DESIGN_PATH, engine="openpyxl") as xw:
         design.to_excel(xw, sheet_name="试验配方", index=False)
         pd.DataFrame([{"变量": k, **v} if isinstance(v, dict) else {"变量": k, "值": v} for k, v in cov.items()]).to_excel(xw, sheet_name="覆盖度", index=False)

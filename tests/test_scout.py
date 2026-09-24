@@ -62,3 +62,26 @@ def test_discover_adds_material_with_source(monkeypatch, home):
 
     again = scout.discover("星海牌吹膜专用 PE", depth="快", max_new=3)   # 同一种料不重复入库
     assert not again["added"]
+
+
+def test_same_price_for_several_materials_is_dropped(monkeypatch, home):
+    """一个页面里几种料报同一个价：那是页面通用价，不能当成每种料的报价。"""
+    from polysage import llm, scout
+    from polysage.formulation import materials as MAT
+
+    monkeypatch.setattr("polysage.sources.websearch.search",
+                        lambda q, **kw: [SearchHit(provider="bing", external_id="y1", title="某平台塑料报价",
+                                                   source_type="web", url="https://example.com/list", abstract="", credibility=3)])
+    monkeypatch.setattr("polysage.sources.fetch.fetch_url",
+                        lambda url, **kw: {"title": "某平台塑料报价", "text": "各类聚乙烯现货 9900 元/吨起。" * 30, "date": "2026-09-20"})
+    monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"materials": [
+        {"name": "昊天 LLDPE", "category": "主体树脂", "grade": "HT-101", "producer": "昊天", "price": 9900},
+        {"name": "昊天 LDPE", "category": "主体树脂", "grade": "HT-202", "producer": "昊天", "price": 9900},
+        {"name": "昊天 HDPE", "category": "主体树脂", "grade": "HT-303", "producer": "昊天", "price": 9900}]})
+
+    out = scout.discover("昊天 聚乙烯", depth="快", max_new=5)
+    assert len(out["added"]) == 3                                   # 料照样入库（待评估）
+    assert all(a["price"] is None for a in out["added"])            # 但这个“通用价”不采用
+    for a in out["added"]:
+        assert MAT.current_prices().get(a["code"], {}).get("estimate") is None
+    assert any("同一个价" in n for n in out["notes"])

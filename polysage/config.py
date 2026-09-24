@@ -67,6 +67,9 @@ class Settings:
     unpaywall_email: str = field(default_factory=lambda: _env("UNPAYWALL_EMAIL"))
     semantic_scholar_api_key: str = field(default_factory=lambda: _env("SEMANTIC_SCHOLAR_API_KEY"))
     tavily_api_key: str = field(default_factory=lambda: _env("TAVILY_API_KEY"))
+    # 搜索 API（服务器 IP 被必应降级 / 搜狗 403 / 360 验证码时的正路，任配一个即可）
+    bocha_api_key: str = field(default_factory=lambda: _env("BOCHA_API_KEY"))
+    zhipu_api_key: str = field(default_factory=lambda: _env("ZHIPU_API_KEY"))
     # 访问口令：设置后打开界面要先输入；对外网开放（隧道）前必须设置
     app_password: str = field(default_factory=lambda: _env("APP_PASSWORD"))
 

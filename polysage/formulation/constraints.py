@@ -105,6 +105,16 @@ def group_sum(components: dict[str, float], codes: list[str]) -> float:
     return float(sum(components.get(k, 0.0) for k in codes))
 
 
+def _any_in_library(codes: list[str]) -> bool:
+    """这一组里有没有哪种料是原料库里真有的。"""
+    if not codes:
+        return False
+    from .materials import list_materials
+
+    have = {m["code"] for m in list_materials(active_only=True)}
+    return any(c in have for c in codes)
+
+
 def check(components: dict[str, float], *, structure: str = "mono", layer: str = "whole",
           c: dict[str, Any] | None = None) -> list[str]:
     """返回违反约束的说明列表（空 = 可行）。layer: whole | core | skin。"""
@@ -126,7 +136,10 @@ def check(components: dict[str, float], *, structure: str = "mono", layer: str =
             continue
         if applies == "core" and layer != "core":
             continue
-        s = group_sum(comps, groups.get(rule["group"], []))
+        codes = groups.get(rule["group"], [])
+        s = group_sum(comps, codes)
+        if "min" in rule and not _any_in_library(codes):
+            continue          # 这一类料原料库里一种都没有（还没发现/还没询到价），不能拿它判所有配方死刑
         if "min" in rule and s < rule["min"] - 1e-9:
             issues.append(f"{rule['name']} = {s:g}% < 下限 {rule['min']}%（{rule.get('reason', '')}）")
         if "max" in rule and s > rule["max"] + 1e-9:

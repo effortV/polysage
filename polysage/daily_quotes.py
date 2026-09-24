@@ -409,12 +409,14 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
                 if picked >= pages_per_query or not h.url or h.url in seen:
                     continue
                 seen.add(h.url)
+                page = {}
                 try:
                     page = fetch_url(h.url)
                 except Exception:  # noqa: BLE001
-                    continue
-                text = page.get("text") or ""
-                if len(text) < 200:
+                    pass
+                # 摘要优先：行情站的正文抓回来多是导航，搜索接口给的摘要里才是报价表
+                text = ((h.abstract or "").strip() + "\n\n" + (page.get("text") or "")).strip()
+                if len(text) < 150:
                     continue
                 page_date = page.get("date") or ""
                 if page_date and not _fresh(page_date, today):
@@ -671,12 +673,14 @@ def web_material_quotes(codes: list[str] | None = None, *, depth: str = "标准"
                 if picked >= pages_per_query or not h.url or h.url in seen:
                     continue
                 seen.add(h.url)
+                page = {}
                 try:
                     page = fetch_url(h.url)
                 except Exception:  # noqa: BLE001
-                    continue
-                text = page.get("text") or ""
-                if len(text) < 200:
+                    pass
+                # 摘要优先：行情站的正文抓回来多是导航，搜索接口给的摘要里才是报价表
+                text = ((h.abstract or "").strip() + "\n\n" + (page.get("text") or "")).strip()
+                if len(text) < 150:
                     continue
                 pd_ = page.get("date") or ""
                 # 不按页面日期预筛：B2B 商家页的“日期”多是模板日期（1688 常年显示 2019），真实报价靠逐条的 date 字段

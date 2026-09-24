@@ -68,9 +68,33 @@ class FakeLLM:
                     "role": "韧性", "effects": {"拉伸": "≈ [S1]", "撕裂": "↑ [S1]", "穿刺": "↑↑ [S1]", "热封": "↑ [S1]"},
                     "typical_dosage": "10-20", "price_estimate": "待查", "risk": "压力升高", "evidence": "[S1]"}
         if "提取材料" in text:
-            if "C4 LLDPE" in text.split("材料【", 1)[-1][:40]:
+            name = text.split("材料【", 1)[-1][:40]
+            if "C4 LLDPE" in name:
                 return {"found": True, "price_rmb_per_ton": 8350, "date": "2026-09", "basis": "华东", "quote": "8350 元/吨"}
-            return {"found": False}
+            # 流水线 ③ 会给库里每种料找一个网查参考价：假源也照给，否则 base 成本算不出来
+            price = {"LDPE": 9600, "HDPE": 8400, "助剂": 12500, "再生": 6000}
+            for k, v in price.items():
+                if k in name:
+                    return {"found": True, "price_rmb_per_ton": v, "date": "2026-09", "basis": "华东", "quote": f"{v} 元/吨"}
+            return {"found": True, "price_rmb_per_ton": 9000, "date": "2026-09", "basis": "华东", "quote": "9000 元/吨"}
+        if "可以买来吹聚乙烯包装膜的原料" in text:          # 智能体找新料：从网页正文里抽材料
+            return {"materials": [
+                {"name": "国产 C4 LLDPE", "category": "主体树脂", "grade": "7042", "producer": "某石化", "is_recycled": 0,
+                 "role": "同类更便宜的 LLDPE，直接替代现用主料", "typical_min": 10, "typical_max": 60,
+                 "effects": {"拉伸": "≈", "撕裂": "≈", "穿刺": "≈", "热封": "≈"}, "risk": "批次波动", "price": 8400,
+                 "price_basis": "华东 含税 8400"},
+                {"name": "茂金属 LLDPE", "category": "主体树脂", "grade": "mPE-1018", "producer": "某化工", "is_recycled": 0,
+                 "role": "低比例增韧，穿刺提升明显", "typical_min": 8, "typical_max": 20,
+                 "effects": {"拉伸": "≈", "撕裂": "↑", "穿刺": "↑↑", "热封": "↑"}, "risk": "需 PPA", "price": 9400,
+                 "price_basis": "华东 含税 9400"},
+                {"name": "再生线性一级料", "category": "再生料", "grade": "工业膜回料", "producer": "某再生厂", "is_recycled": 1,
+                 "role": "低价补韧性", "typical_min": 10, "typical_max": 25,
+                 "effects": {"拉伸": "≈", "撕裂": "≈", "穿刺": "≈", "热封": "≈"}, "risk": "含 PIB 会粘连", "price": 5900,
+                 "price_basis": "到厂 5900"},
+                {"name": "吹膜加工助剂母粒", "category": "助剂", "grade": "PPA-01", "producer": "某助剂厂", "is_recycled": 0,
+                 "role": "消除鲨鱼皮，稳定加工", "typical_min": 1, "typical_max": 3,
+                 "effects": {"拉伸": "≈", "撕裂": "≈", "穿刺": "≈", "热封": "≈"}, "risk": "过量影响热封", "price": 12500,
+                 "price_basis": "含税 12500"}]}
         if "\"materials\"" in text and "补充最多" in text:
             return {"materials": [{"code": "LL8", "name": "C8 齐格勒 LLDPE", "category": "主体树脂", "role": "韧性", "typical_min": 10, "typical_max": 30, "why": "测试"}]}
         if "\"picks\"" in text:
@@ -138,9 +162,26 @@ def fake_sources(monkeypatch):
     monkeypatch.setattr(SS, "search_all", search_all)
     monkeypatch.setattr(SS, "web_search", lambda q, limit=6: _fake_hits(q, "web", 2))
     monkeypatch.setattr(SS, "fetch_url", lambda url: {"kind": "html", "text": "LLDPE 7042 华东市场价 8350 元/吨（2026-09-10）", "file_path": "", "title": "价格页"})
+    # 智能体找新料（polysage.scout）在调用时才 import，这里按模块属性替换
+    import polysage.sources.fetch as FE
+    import polysage.sources.websearch as WS
+
+    monkeypatch.setattr(WS, "search", lambda q, **kw: _fake_hits(q, "web", 3))
+    monkeypatch.setattr(FE, "fetch_url", lambda url, **kw: {
+        "kind": "html", "title": "某塑化报价页", "date": "2026-09-20", "file_path": "",
+        "text": "国产 C4 LLDPE 7042 含税 8400 元/吨；茂金属 LLDPE mPE-1018 9400；再生线性一级料 5900；加工助剂母粒 12500。" * 8})
     # 入库时不真的抓全文
     monkeypatch.setattr(IP, "_try_fulltext", lambda hit: ("", "", "测试：跳过全文"))
     return search_all
+
+
+@pytest.fixture(autouse=True)
+def _no_paid_search(monkeypatch):
+    """测试一律不走付费搜索 API：跑一次全量测试不该花钱，也不该被网络拖慢。"""
+    from polysage.config import settings
+
+    for attr in ("bocha_api_key", "zhipu_api_key", "tavily_api_key"):
+        monkeypatch.setattr(settings, attr, "", raising=False)
 
 
 @pytest.fixture(scope="session")

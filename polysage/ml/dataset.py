@@ -26,6 +26,23 @@ HIGHER_BETTER = {**{k: True for k in PRIMARY_TARGETS}, "tensile_MD": True, "tens
 META_COLS = ["source", "scheme_code"]
 ALL_COLS = ID_COLS[:5] + META_COLS + COMP_COLS + ID_COLS[5:7] + PROC_COLS + TARGET_COLS + ["pass_flag", ID_COLS[7]]
 
+
+def refresh_comp_cols() -> list[str]:
+    """智能体新发现的料也要能进试验设计和数据表：把原料库里的代码补进组分列（老列保留，不动已有数据）。"""
+    global ALL_COLS
+
+    try:
+        from ..formulation.materials import list_materials
+
+        codes = [m["code"] for m in list_materials(active_only=True)]
+    except Exception:  # noqa: BLE001
+        return COMP_COLS
+    added = [c for c in codes if c not in COMP_COLS]
+    if added:
+        COMP_COLS.extend(added)
+        ALL_COLS = ID_COLS[:5] + META_COLS + COMP_COLS + ID_COLS[5:7] + PROC_COLS + TARGET_COLS + ["pass_flag", ID_COLS[7]]
+    return COMP_COLS
+
 DATA_PATH = KB["experiment"] / "data.csv"
 TEMPLATE_PATH = KB["experiment"] / "数据表模板.csv"
 

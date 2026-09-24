@@ -33,8 +33,9 @@ def test_discovery_pipeline(fake_llm, fake_sources):
     assert all(p.exists() and p.stat().st_size > 5000 for p in docs)
     assert stage_experiment.count_design() >= 24
     assert (KB["experiment"] / "数据表模板.csv").exists()
-    # 新材料建议被写入原料库
-    assert db.q1("SELECT id FROM materials WHERE code='LL8'")
+    # 新材料是智能体从网页上找来的：每条都带来源网址，而不是凭空补的清单
+    found = db.q("SELECT code, name, source_url FROM materials WHERE COALESCE(source_url,'') <> ''")
+    assert found and all(r["source_url"].startswith("http") for r in found)
 
 
 def test_experiment_loop(fake_llm, fake_sources):

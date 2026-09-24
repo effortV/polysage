@@ -66,7 +66,9 @@ def _round_components(comps: dict[str, float]) -> dict[str, float]:
 
 def _sample_one(theme: dict[str, Any], rng: random.Random, bounds: dict[str, list[float]],
                 mats: dict[str, dict[str, Any]] | None = None) -> dict[str, float]:
-    comps: dict[str, float] = {"AD": round(rng.uniform(0.8, 1.2), 1)}
+    mats = mats or {}
+    # 助剂母粒是必配的，但前提是原料库里有它（新库可能还没发现这类料）
+    comps: dict[str, float] = {"AD": round(rng.uniform(0.8, 1.2), 1)} if mats.get("AD") else {}
     tough = list(theme.get("toughness", []))
     require = list(theme.get("require", []))
     forbid = set(theme.get("forbid", []))
@@ -78,8 +80,7 @@ def _sample_one(theme: dict[str, Any], rng: random.Random, bounds: dict[str, lis
     chosen.discard("AD")
     # 主料 LL 始终保留（可以为较低比例）
     chosen.add("LL")
-    rest = 100.0 - comps["AD"]
-    mats = mats or {}
+    rest = 100.0 - comps.get("AD", 0.0)
     for k in chosen:
         lo, hi = bounds.get(k, [0, 30])
         m = mats.get(k) or {}
@@ -125,11 +126,26 @@ def generate(n_out: int = 40, *, structure: str = "mono", n_samples: int = 20000
     bounds = c.get("component_bounds", {})
     limit = cost_limit or c.get("cost_limit", 8000)
     theme_pool = dict(THEMES)
-    # 原料库里新登记的新料 PE（不在内置主题里的）自动成为“同类替代”主题，价格联动后也能被采样
+    active = {m["code"]: m for m in list_materials(active_only=True)}
     known = {x for th in theme_pool.values() for v in th.values() if isinstance(v, list) for x in v} | {"LL", "AD"}
-    for code in c.get("groups", {}).get("virgin_pe", []):
-        if code not in known and code in {m["code"] for m in list_materials(active_only=True)}:
-            theme_pool[f"新料替代（{code}）"] = {"toughness": [code], "space": ["R1", "RL"], "optional": ["LD", "HD"], "ll_free": True}
+    recycled_now = [code for code, m in active.items() if m.get("is_recycled")]
+    # 原料库里新来的料（智能体发现的、手工登记的）自动成为一个主题，不然它们永远进不了方案
+    for code, m in active.items():
+        if code in known or code == "LL":
+            continue
+        space = [x for x in dict.fromkeys(recycled_now + ["R1", "RL"]) if x in active and x != code][:3]
+        optional = [x for x in ("LD", "HD") if x in active]
+        if m.get("is_recycled"):
+            theme_pool[f"再生料替代（{code}）"] = {"toughness": [], "space": [code] + space, "optional": optional}
+        elif (m.get("category") or "") in ("主体树脂", "弹性体"):
+            theme_pool[f"新料替代（{code}）"] = {"toughness": [code], "space": space, "optional": optional, "ll_free": True}
+    # 主题要的料库里没有就别留着，否则一条候选也采不出来
+    theme_pool = {k: v for k, v in theme_pool.items()
+                  if all(x in active for x in list(v.get("toughness") or []) + list(v.get("require") or []))}
+    if not theme_pool:
+        # 库里只剩现配方那几种料：就用它们自己组合（调再生料比例、减 HDPE）
+        optional = [code for code in active if code not in recycled_now and code != "AD"]
+        theme_pool = {"现有料自由组合": {"toughness": [], "space": recycled_now, "optional": optional}}
     if themes:
         theme_pool = {k: v for k, v in theme_pool.items() if k in themes}
     if allowed:

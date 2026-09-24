@@ -59,8 +59,11 @@ def d_optimal(pool: np.ndarray, n_points: int, quadratic: bool = True, iters: in
 def first_round(n_points: int = 24, variables: list[str] | None = None, priority: list[dict[str, float]] | None = None,
                 seed: int = 0, fixed: dict[str, float] | None = None) -> pd.DataFrame:
     """首轮 DOE：只动 variables（默认 LL, LLC, mLL, LD, HD, R1, RL, POE），AD 固定 1%；并入优先配方。"""
+    from ..formulation.materials import get_material
+
     variables = variables or ["LL", "LLC", "mLL", "LD", "HD", "R1", "RL", "POE"]
-    fixed = fixed or {"AD": 1.0}
+    if fixed is None:                     # 助剂库里有才固定 1%，原料库是空的时候别卡在这
+        fixed = {"AD": 1.0} if get_material("AD") else {}
     # 用生成器造可行池（不限成本），只保留由 variables + fixed 组成的配方
     cands = generate(n_out=3000, n_samples=16000, seed=seed, cost_limit=1e9, fixed=fixed)
     rows = []

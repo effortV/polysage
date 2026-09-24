@@ -149,15 +149,24 @@ def discover(goal: str = "", *, depth: str = "标准", max_new: int = 6,
                 if picked >= pages_per_query or not h.url or h.url in seen_urls:
                     continue
                 seen_urls.add(h.url)
+                page = {}
                 try:
                     page = fetch_url(h.url)
                 except Exception:  # noqa: BLE001
-                    continue
-                text = page.get("text") or ""
-                if len(text) < 300:
+                    pass
+                # 行情站的正文常被挡住（抓回来一堆导航），搜索接口给的摘要里反而是真数据
+                text = ((h.abstract or "").strip() + "\n\n" + (page.get("text") or "")).strip()
+                if len(text) < 200:
                     continue
                 picked += 1
-                for c in _extract(page.get("title") or h.title, text):
+                cands = _extract(page.get("title") or h.title, text)
+                # 一个页面里好几种料报同一个价，基本是把页面上那个唯一的价套给了所有牌号：这种价不要
+                prices_seen = [c["price"] for c in cands if c["price"]]
+                if len(prices_seen) > 1 and len(set(prices_seen)) == 1:
+                    for c in cands:
+                        c["price"] = None
+                    notes.append(f"{(page.get('title') or h.title)[:24]}：几种料报同一个价，判为页面通用价，没有采用")
+                for c in cands:
                     if len(added) >= max_new:
                         break
                     dup = _same_material(c["name"], c["grade"], existing)
