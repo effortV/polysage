@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Callable
 
 from .. import activity, db, kb, llm
@@ -117,8 +118,44 @@ def chat(session_id: int, user_text: str, *, max_steps: int = 8,
     sess = get_session(session_id)
     if not sess:
         raise ValueError("会话不存在")
-    role = ROLES.get(sess["role_key"]) or ROLES["temp"]
     _add(session_id, "user", user_text)
+    return _run_turn(session_id, max_steps=max_steps, on_event=on_event)
+
+
+PENDING_STALE_SECONDS = 90
+
+
+def is_pending(session_id: int, *, stale_after: float = PENDING_STALE_SECONDS) -> bool:
+    """上一轮没跑完（最后一条不是助手的正式回答）：多半是服务重启/超时把这轮掐了。
+
+    刚写过（stale_after 秒内）的不算：那是另一个标签页正在跑这一轮，别去抢。
+    """
+    rows = messages(session_id)
+    if not rows:
+        return False
+    last = rows[-1]
+    stuck = last["role"] == "tool" or (last["role"] == "assistant" and not (last.get("content") or "").strip())
+    if not stuck or stale_after <= 0:
+        return stuck
+    try:
+        idle = (datetime.now() - datetime.fromisoformat(last["created_at"])).total_seconds()
+    except (TypeError, ValueError):
+        return True
+    return idle >= stale_after
+
+
+def resume(session_id: int, *, max_steps: int = 8,
+           on_event: Callable[[str, dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    """接着已有的工具结果把这轮的回答补出来（不新增用户消息）。"""
+    return _run_turn(session_id, max_steps=max_steps, on_event=on_event)
+
+
+def _run_turn(session_id: int, *, max_steps: int = 8,
+              on_event: Callable[[str, dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    sess = get_session(session_id)
+    if not sess:
+        raise ValueError("会话不存在")
+    role = ROLES.get(sess["role_key"]) or ROLES["temp"]
     sys_msg = {"role": "system", "content": system_prompt(sess["role_key"], sess.get("summary") or "")}
     citations: list[dict[str, Any]] = []
     steps = 0

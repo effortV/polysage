@@ -81,6 +81,30 @@ def render_session_chat(session_id: int, placeholder: str, *, key: str = "chat",
                 with ui.expander(f"工具结果 {m.get('name')}", step=True):
                     st.text((m.get("content") or "")[:4000])
 
+    if runner.is_pending(session_id):
+        st.warning("上一轮没跑完就中断了（多半是服务重启或网络超时），工具结果已经拿到，回答还没生成。")
+        if st.button("继续生成回答", type="primary", key=f"resume_{key}"):
+            with st.chat_message("assistant", avatar=":material/science:"):
+                holder2 = st.container()
+
+                def on_event2(kind, payload):
+                    if kind == "tool_call":
+                        with holder2:
+                            with ui.status(f"调用 {payload['name']}", step=True):
+                                st.json(payload["arguments"])
+                    elif kind == "tool_result":
+                        with holder2:
+                            with ui.status(f"结果 {payload['name']}", step=True, state="complete"):
+                                st.text(payload["text"][:3000])
+
+                try:
+                    res = runner.resume(session_id, on_event=on_event2)
+                    st.write(res["content"])
+                    render_downloads(res["content"], f"{key}_resume")
+                except llm.LLMError as e:
+                    st.error(str(e))
+            st.rerun()
+
     if prompt := ui.chat_input(placeholder):
         if not settings.llm_ready:
             st.error("对话模型未配置，请到「设置」页填写密钥。")

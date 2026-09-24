@@ -124,3 +124,26 @@ def test_parity_and_diversity_rules(fake_llm):
     assert len(buckets) >= 1 and any("档位分布" in n for n in out["notes"])
     counts = {b: sum(1 for s in out["schemes"] if s["bucket"] == b) for b in buckets}
     assert max(counts.values()) <= len(out["schemes"])                                        # 不再死循环、且能出结果
+
+
+def test_pending_turn_detection_and_resume(fake_llm, monkeypatch):
+    """服务重启把一轮掐断后：能认出“只有工具结果没有回答”，并把回答补出来。"""
+    from polysage import db
+    from polysage.agents import runner
+
+    sid = runner.create_session("advisor", title="中断测试")
+    assert not runner.is_pending(sid)                     # 空会话不算中断
+
+    runner._add(sid, "user", "出个方案")
+    runner._add(sid, "assistant", "好的，我先拉数据。", tool_calls=[{"id": "c1", "name": "get_base", "arguments": {}}])
+    runner._add(sid, "tool", "base 尚未录入", tool_call_id="c1", name="get_base")
+    assert not runner.is_pending(sid)                       # 刚写的：当作别的标签页正在跑，不去抢
+    assert runner.is_pending(sid, stale_after=0)            # 冷下来（或明确不等）→ 这轮没跑完
+
+    monkeypatch.setattr(runner.llm, "chat", lambda messages, **kw: runner.llm.ChatResult(content="补出来的结论：建议先录 base。"))
+    out = runner.resume(sid)
+    assert "补出来的结论" in out["content"]
+    assert not runner.is_pending(sid, stale_after=0)        # 补完就不再是 pending
+    rows = db.q("SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,))
+    assert rows[-1]["role"] == "assistant" and rows[-1]["content"] == out["content"]
+    assert sum(1 for r in rows if r["role"] == "user") == 1   # 续跑不会重复添加用户消息

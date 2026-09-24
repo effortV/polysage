@@ -10,7 +10,7 @@ sudo -u adminisator git checkout -q origin/master -- $CODE_PATHS
 sudo -u adminisator git reset -q
 sudo -u adminisator .venv/bin/pip install -q -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 chmod +x deploy/*.sh
-systemctl restart polysage-server
+bash "$ROOT/deploy/safe_restart.sh" 120 >/dev/null || systemctl restart polysage-server
 sleep 6
 systemctl is-active polysage-server && curl -s -o /dev/null -w "本地 8511 -> %{http_code}\n" http://127.0.0.1:8511/
 echo "已更新到 $(sudo -u adminisator git rev-parse --short origin/master)"
