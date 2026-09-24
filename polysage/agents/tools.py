@@ -219,8 +219,9 @@ def recommend_schemes(materials: list[dict] | None = None, only_listed_materials
     lines = [f"模式：{out['mode']}；现配方成本 {out['base_cost']:.0f}，上限 {out['cost_limit']}"] + [f"· {n}" for n in out["notes"]]
     for s in out["schemes"]:
         ml = s.get("ml") or {}
-        lines.append(f"{s['rank']}. [{s['theme']}] {s['formula']} | 成本 {s['cost']}（{s['cost_tier']}）| 降本 {s['savings_pct']:.1f}% | "
-                     f"四项 {s.get('effects_short') or '-'} | 把握 {s.get('pass_confidence') or '-'}" + (f" | P(过关) {ml['p_pass']:.2f}" if ml.get('p_pass') is not None else ""))
+        lines.append(f"{s['rank']}. [{s['theme']}｜{s.get('bucket') or '-'}] {s['formula']} | 成本 {s['cost']}（{s['cost_tier']}）| 降本 {s['savings_pct']:.1f}% | "
+                     f"四项 {s.get('effects_short') or '-'}（{(s.get('parity') or {}).get('why', '')}）| 把握 {s.get('pass_confidence') or '-'}"
+                     + (f" | P(过关) {ml['p_pass']:.2f}" if ml.get('p_pass') is not None else ""))
         if s.get("sourcing"):
             lines.append(f"    原料采购：{s['sourcing']}")
     lines.append("产出：" + "; ".join(out["outputs"]))

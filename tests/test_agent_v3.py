@@ -97,3 +97,30 @@ def test_tool_result_clipping_and_caps():
     assert clipped.startswith("甲") and clipped.endswith("甲")
     for name in ("list_materials", "recommend_schemes", "procurement_plan", "price_outlook"):
         assert TOOL_CALL_CAPS.get(name)
+
+
+def test_parity_and_diversity_rules(fake_llm):
+    """性能门槛（↓↓ 或多项 ↓ 不推荐）、最小降本、档位分散。"""
+    from polysage import pricing, recommender
+    from polysage.formulation import qualitative as Q
+
+    assert Q.parity({"拉伸": "≈", "撕裂": "↓", "穿刺": "≈", "热封": "↑"})["ok"]            # 单项小降可以
+    assert not Q.parity({"拉伸": "↓↓", "撕裂": "≈", "穿刺": "≈", "热封": "≈"})["ok"]        # 明显下降不行
+    assert not Q.parity({"拉伸": "↓", "撕裂": "↓", "穿刺": "≈", "热封": "≈"})["ok"]         # 两项下降不行
+    p0 = Q.parity({})                                                                       # 没评估 ≠ 会降
+    assert p0["ok"] and not p0["assessed"] and "未做定性评估" in p0["why"]
+
+    codes = ("LL", "LLC", "LD", "HD", "R1", "RL")
+    for code, price in zip(codes, (9670, 9200, 12150, 9300, 6290, 5150)):
+        pricing.record_price(code, price, "actual", source="测试")
+    try:
+        out = recommender.recommend({"use_llm": False, "n_schemes": 6, "save_to_library": False})
+    finally:
+        for code in codes:                       # 还原，避免影响后面的用例
+            pricing.undo_last_price(code, "actual")
+    assert out["schemes"] and all((s.get("savings_pct") or 0) >= 3 for s in out["schemes"])   # 降本门槛
+    assert all(s.get("bucket") for s in out["schemes"])                                       # 每个方案有档位
+    buckets = {s["bucket"] for s in out["schemes"]}
+    assert len(buckets) >= 1 and any("档位分布" in n for n in out["notes"])
+    counts = {b: sum(1 for s in out["schemes"] if s["bucket"] == b) for b in buckets}
+    assert max(counts.values()) <= len(out["schemes"])                                        # 不再死循环、且能出结果

@@ -103,6 +103,26 @@ def assess(cands: list[Candidate], batch: int = 8) -> list[dict[str, Any]]:
     return out
 
 
+DOWN_SCORE = {"↓↓": 2, "↓": 1, "≈": 0, "↑": -1, "↑↑": -2, "?": 0}
+
+
+def parity(effects: dict[str, Any]) -> dict[str, Any]:
+    """四项方向 → 与现配方“性能相当”的判定。
+
+    任一项 ↓↓（明显下降）或累计下降分 ≥ 2（例如两项 ↓）就算“可能降性能”，不作为推荐方案。
+    """
+    dirs = {k: direction(effects.get(k)) for k in INDICATORS} if effects else {}
+    score = sum(DOWN_SCORE.get(v, 0) for v in dirs.values())
+    worst = max((DOWN_SCORE.get(v, 0) for v in dirs.values()), default=0)
+    unknown = [k for k, v in dirs.items() if v == "?"] if dirs else list(INDICATORS)
+    assessed = bool(dirs) and any(v != "?" for v in dirs.values())
+    ok = (worst < 2 and score < 2) if assessed else True      # 没做定性评估的不算“会降性能”，标未评估即可
+    return {"dirs": dirs, "down_score": score, "worst": worst, "unknown": unknown, "ok": ok, "assessed": assessed,
+            "why": ("未做定性评估（需小试验证）" if not assessed else
+                    ("四项与现配方相当或更好" if ok else
+                     ("有指标明显下降（↓↓）" if worst >= 2 else "多项下降")))}
+
+
 def rank(cands: list[Candidate], assessments: list[dict[str, Any]], top_n: int = 20) -> list[dict[str, Any]]:
     rows = []
     for cd, a in zip(cands, assessments):
@@ -117,7 +137,7 @@ def rank(cands: list[Candidate], assessments: list[dict[str, Any]], top_n: int =
             "risk_level": a.get("risk_level", ""), "pass_confidence": a.get("pass_confidence", ""),
             "evidence": a.get("evidence", ""),
             "effects_short": " ".join(direction(eff.get(k)) for k in INDICATORS) if eff else "",
-            "effects": eff, "score": score,
+            "effects": eff, "score": score, "parity": parity(eff),
         })
     rows.sort(key=lambda r: -r["score"])
     for i, r in enumerate(rows[:top_n], 1):

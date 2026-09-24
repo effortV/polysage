@@ -44,6 +44,9 @@ class RecommendInput:
     use_ml: bool = True
     save_to_library: bool = True
     only_buyable: bool = True   # 只用买得到的料（有实价/日报/网查报价），现配方里的料始终保留
+    require_parity: bool = True  # 性能要与现配方相当：四项里有明显下降（↓↓）或多项下降的不推荐
+    min_savings_pct: float = 3.0  # 降本不到这个幅度不值得试
+    diversify: bool = True       # 输出按再生料档位与思路分散，避免十个方案几乎一样
     origin: str = "配方推荐页"   # 进配方库时的来源标签：对话推荐 / 配方推荐页
     seed: int = 42
 
@@ -238,7 +241,7 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
             i = by_formula.get(r["formula"])
             r["ml"] = ml.get(i) if i is not None else None
         ranked.sort(key=lambda r: (-(1 if (r.get("ml") or {}).get("p_pass", 0) >= 0.8 else 0), r["cost"] or 1e9))
-    ranked = ranked[:inp.n_schemes]
+    ranked = _filter_and_diversify(ranked, inp, notes)
     for i, r in enumerate(ranked, 1):
         r["rank"] = i
 
@@ -296,6 +299,82 @@ def recommend(inp: RecommendInput | dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _recycled_pct(components: dict[str, float]) -> float:
+    mats = {m["code"]: m for m in MAT.list_materials(active_only=False)}
+    return sum(w for k, w in components.items() if (mats.get(k) or {}).get("is_recycled"))
+
+
+def _bucket(components: dict[str, float]) -> str:
+    r = _recycled_pct(components)
+    return "再生料 <30%（稳妥）" if r < 30 else ("再生料 30～45%（中等）" if r < 45 else "再生料 ≥45%（激进）")
+
+
+def _filter_and_diversify(ranked: list[dict[str, Any]], inp: "RecommendInput", notes: list[str]) -> list[dict[str, Any]]:
+    """性能门槛 → 最小降本 → 按再生料档位与思路轮流取，保证方案有区分度。"""
+    pool = list(ranked)
+    if inp.require_parity:
+        keep = [r for r in pool if (r.get("parity") or {}).get("ok", True)]
+        dropped = len(pool) - len(keep)
+        if keep:
+            if dropped:
+                notes.append(f"性能门槛：{dropped} 个方案有指标明显下降（↓↓ 或多项 ↓），不作为推荐。")
+            pool = keep
+        elif dropped:
+            notes.append("所有候选都有指标下降迹象：下面按“下降最少”排序，属于取舍方案，需小试验证。")
+            pool.sort(key=lambda r: ((r.get("parity") or {}).get("down_score", 0), r["cost"] or 1e9))
+    if inp.min_savings_pct:
+        keep = [r for r in pool if (r.get("savings_pct") or 0) >= inp.min_savings_pct]
+        if keep:
+            if len(keep) < len(pool):
+                notes.append(f"降本门槛：低于 {inp.min_savings_pct:g}% 的方案不列（不值得为此改配方）。")
+            pool = keep
+        else:
+            notes.append(f"没有方案达到 {inp.min_savings_pct:g}% 降本，下面按降本幅度排序。")
+    if not inp.diversify:
+        return pool[:inp.n_schemes]
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for r in pool:
+        groups.setdefault((_bucket(r["components"]), r.get("theme") or ""), []).append(r)
+    out: list[dict[str, Any]] = []
+    seen_bucket: dict[str, int] = {}
+    cap = max(2, inp.n_schemes // 2)          # 同一档位最多占一半，避免十个方案几乎一样
+    while len(out) < inp.n_schemes:
+        took = False
+        for key in sorted(groups, key=lambda k: (groups[k][0]["cost"] if groups[k] else 1e9)):
+            lst = groups.get(key) or []
+            if not lst or len(out) >= inp.n_schemes:
+                continue
+            bucket = key[0]
+            if seen_bucket.get(bucket, 0) >= cap:
+                continue
+            r = lst.pop(0)
+            r["bucket"] = bucket
+            out.append(r)
+            seen_bucket[bucket] = seen_bucket.get(bucket, 0) + 1
+            took = True
+        if not took:                          # 这一轮谁都没取到（都被档位上限挡住）就停，否则会死循环
+            break
+    for r in out:
+        r.setdefault("bucket", _bucket(r["components"]))
+    if len(out) < inp.n_schemes:                       # 还不够就补齐：先补用得少的档位，再按成本
+        rest = [r for r in pool if r not in out]
+        rest.sort(key=lambda r: (seen_bucket.get(_bucket(r["components"]), 0), r["cost"] or 1e9))
+        for r in rest[: inp.n_schemes - len(out)]:
+            r.setdefault("bucket", _bucket(r["components"]))
+            out.append(r)
+            seen_bucket[r["bucket"]] = seen_bucket.get(r["bucket"], 0) + 1
+    # 先放“性能相当”的，再按成本——用户要的是性能不降且更便宜
+    out.sort(key=lambda r: (0 if (r.get("parity") or {}).get("ok", True) else 1, r["cost"] or 1e9))
+    dist: dict[str, int] = {}
+    for r in out:
+        dist[r["bucket"]] = dist.get(r["bucket"], 0) + 1
+    notes.append("方案档位分布：" + "、".join(f"{k} {v} 个" for k, v in dist.items()) + "。")
+    if not any(k.startswith("再生料 <30") for k in dist):
+        notes.append("按当前价格，同类 LLDPE 之间已无明显价差，降本几乎全部来自再生料比例——"
+                     "所以稳妥档（再生料 <30%）没有能达到降本门槛的方案；要更稳就得接受降本更小。")
+    return out
+
+
 def _existing_code(components: dict[str, float]) -> str | None:
     f = L.find_by_components(components)
     return f["code"] if f else None
@@ -310,7 +389,8 @@ def export(out: dict[str, Any], stem: str | None = None) -> list[Path]:
         rows.append({"排名": r["rank"], "设计思路": r["theme"], "配方（组分+比例%）": r["formula"], "成本(元/吨)": r["cost"], "价格口径": r["cost_tier"],
                      "较现配方降本(元/吨)": round(r["savings"]) if r.get("savings") is not None else None,
                      "降本%": round(r["savings_pct"], 1) if r.get("savings_pct") is not None else None, "面积成本指数": r.get("area_index"),
-                     "四项预期(拉 撕 穿 封 透)": r.get("effects_short"), "原料采购（怎么来的）": r.get("sourcing"),
+                     "四项预期(拉 撕 穿 封 透)": r.get("effects_short"), "性能判定": (r.get("parity") or {}).get("why", ""),
+                     "档位": r.get("bucket"), "原料采购（怎么来的）": r.get("sourcing"),
                      "全部可采购": "否" if r.get("unbuyable") else "是", "预期说明": r.get("expected"), "风险": r.get("risks"), "风险等级": r.get("risk_level"),
                      "过关把握": r.get("pass_confidence"), "依据": r.get("evidence"),
                      "模型 P(过关)": round(ml["p_pass"], 2) if ml.get("p_pass") is not None else None,
