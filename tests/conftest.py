@@ -182,6 +182,13 @@ def _no_paid_search(monkeypatch):
 
     for attr in ("bocha_api_key", "zhipu_api_key", "tavily_api_key"):
         monkeypatch.setattr(settings, attr, "", raising=False)
+    # 也别去敲免费引擎：真去连必应/百度/搜狗，一条查询就是几十秒，整轮测试会拖成 20 分钟
+    import polysage.sources.websearch as WS
+
+    def _offline(*a, **kw):
+        raise RuntimeError("测试环境不联网检索")
+
+    monkeypatch.setattr(WS, "_search", _offline)
 
 
 @pytest.fixture(scope="session")

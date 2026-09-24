@@ -44,8 +44,20 @@ EXTRACT_PROMPT = """从下面的网页正文里找出“可以买来吹聚乙烯
 输出：{{"materials": [...]}}；正文里没有合格的料就输出 {{"materials": []}}。"""
 
 CODE_HINT = {"主体树脂": "M", "再生料": "R", "弹性体": "E", "助剂": "AD", "填充母料": "F"}
+# 每类料的合理价区间（元/吨）：行情表里的数字常常连在一起，没有这个尺子就会抽出 86000 的 LLDPE
+PRICE_RANGE = {"主体树脂": (5000, 30000), "再生料": (1500, 15000), "弹性体": (8000, 45000),
+               "助剂": (3000, 150000), "填充母料": (1000, 20000)}
 # 实验室/论文里的东西不要：买不到
 LAB_WORDS = ("实验室", "自制", "自行合成", "课题组", "小试制备", "中试制备", "专利实施例", "样品制备")
+# 外观不符的料：包装膜要本色/透明，黑色杂色回料再便宜也不能用
+BAD_LOOK = ("黑色", "黑颗粒", "杂色", "彩色", "花料", "灰色", "深色")
+
+
+def _use_flag(name: str, role: str = "") -> str:
+    text = f"{name} {role}"
+    if any(w in text for w in BAD_LOOK):
+        return "否（外观不符：包装膜要本色/透明）"
+    return "待评估"
 
 
 def _next_code(category: str, taken: set[str]) -> str:
@@ -89,7 +101,8 @@ def _clean(it: dict[str, Any]) -> dict[str, Any] | None:
         price = float(price) if price is not None else None
     except (TypeError, ValueError):
         price = None
-    if price is not None and not (1000 <= price <= 90000):        # 明显不是元/吨的数就丢掉
+    lo_p, hi_p = PRICE_RANGE.get(cat, (1000, 90000))
+    if price is not None and not (lo_p <= price <= hi_p):         # 不在这类料的常识区间里，多半是抽错了
         price = None
     if any(w in name for w in LAB_WORDS):
         return None
@@ -182,7 +195,8 @@ def discover(goal: str = "", *, depth: str = "标准", max_new: int = 6,
                     upsert_material({"code": code, "category": c["category"], "name": c["name"], "grade": c["grade"],
                                      "producer": c["producer"], "is_recycled": c["is_recycled"], "role": c["role"],
                                      "typical_min": c["typical_min"], "typical_max": c["typical_max"],
-                                     "effects": c["effects"], "risk": c["risk"], "use_flag": "待评估",
+                                     "effects": c["effects"], "risk": c["risk"],
+                                     "use_flag": _use_flag(c["name"], c["role"]),
                                      "origin": f"智能体发现 {theme}", "source_url": h.url, "discovered_at": db.now(),
                                      "notes": f"{theme}｜来源：{(page.get('title') or h.title)[:60]}"})
                     if c["price"]:

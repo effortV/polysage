@@ -85,3 +85,38 @@ def test_same_price_for_several_materials_is_dropped(monkeypatch, home):
     for a in out["added"]:
         assert MAT.current_prices().get(a["code"], {}).get("estimate") is None
     assert any("同一个价" in n for n in out["notes"])
+
+
+def test_price_sanity_range_by_category():
+    """行情表里数字连在一起会抽出 86000 元/吨的 LLDPE：按类别的常识区间挡掉。"""
+    from polysage.scout import _clean
+
+    def price(cat, v, **kw):
+        out = _clean({"name": "某料", "category": cat, "grade": "X1", "price": v, **kw})
+        return (out or {}).get("price")
+
+    assert price("主体树脂", 86000) is None and price("主体树脂", 8600) == 8600      # 树脂不可能 8.6 万
+    assert price("再生料", 6100) == 6100 and price("再生料", 61000) is None
+    assert price("助剂", 60000) == 60000                                            # 助剂本来就贵，别误杀
+
+
+def test_black_recycled_is_flagged_unusable(monkeypatch, home):
+    """黑色/杂色回料再便宜也不能进包装膜：发现时标“不用”，配方生成也不碰它。"""
+    from polysage import llm, scout
+    from polysage.formulation import generator as G, materials as MAT
+
+    monkeypatch.setattr("polysage.sources.websearch.search",
+                        lambda q, **kw: [SearchHit(provider="bing", external_id="z1", title="再生PE市场价格表",
+                                                   source_type="web", url="https://example.com/rec", abstract="", credibility=3)])
+    monkeypatch.setattr("polysage.sources.fetch.fetch_url",
+                        lambda url, **kw: {"title": "再生PE市场价格表", "text": "黑色一级颗粒 4000 元/吨。" * 30, "date": "2026-09-20"})
+    monkeypatch.setattr(llm, "chat_json", lambda messages, **kw: {"materials": [
+        {"name": "再生高压黑色一级颗粒", "category": "再生料", "grade": "", "producer": "某再生厂", "is_recycled": 1,
+         "role": "成本最低的回料", "typical_min": 10, "typical_max": 40, "price": 4000, "price_basis": "4000 元/吨"}]})
+
+    out = scout.discover("再生 PE 颗粒", depth="快", max_new=2)
+    assert len(out["added"]) == 1
+    m = MAT.get_material(out["added"][0]["code"])
+    assert m["use_flag"].startswith("否") and "外观" in m["use_flag"]
+    themes = G.generate(n_out=5, n_samples=800, seed=3, cost_limit=1e9)
+    assert all(m["code"] not in c.components for c in themes)        # 不会被采样进配方

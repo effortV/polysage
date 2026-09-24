@@ -105,14 +105,24 @@ def group_sum(components: dict[str, float], codes: list[str]) -> float:
     return float(sum(components.get(k, 0.0) for k in codes))
 
 
-def _any_in_library(codes: list[str]) -> bool:
-    """这一组里有没有哪种料是原料库里真有的。"""
-    if not codes:
-        return False
+_LIB_CACHE: dict[str, Any] = {"at": 0.0, "codes": frozenset()}
+
+
+def library_codes(ttl: float = 5.0) -> frozenset:
+    """原料库里现有的代码。check() 在生成配方时一秒要跑上千次，每次查库太贵，缓存几秒。"""
+    import time
+
     from .materials import list_materials
 
-    have = {m["code"] for m in list_materials(active_only=True)}
-    return any(c in have for c in codes)
+    if time.monotonic() - _LIB_CACHE["at"] > ttl:
+        _LIB_CACHE["codes"] = frozenset(m["code"] for m in list_materials(active_only=True))
+        _LIB_CACHE["at"] = time.monotonic()
+    return _LIB_CACHE["codes"]
+
+
+def _any_in_library(codes: list[str]) -> bool:
+    """这一组里有没有哪种料是原料库里真有的。"""
+    return bool(codes) and bool(set(codes) & library_codes())
 
 
 def check(components: dict[str, float], *, structure: str = "mono", layer: str = "whole",

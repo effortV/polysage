@@ -131,7 +131,7 @@ def generate(n_out: int = 40, *, structure: str = "mono", n_samples: int = 20000
     recycled_now = [code for code, m in active.items() if m.get("is_recycled")]
     # 原料库里新来的料（智能体发现的、手工登记的）自动成为一个主题，不然它们永远进不了方案
     for code, m in active.items():
-        if code in known or code == "LL":
+        if code in known or code == "LL" or str(m.get("use_flag") or "").startswith("否"):
             continue
         space = [x for x in dict.fromkeys(recycled_now + ["R1", "RL"]) if x in active and x != code][:3]
         optional = [x for x in ("LD", "HD") if x in active]
