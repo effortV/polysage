@@ -407,22 +407,38 @@ def procurement_plan(rank: int = 1, formulation_code: str = "", components: dict
 @tool("find_material_suppliers", "为再生料 / 助剂 / 母料等辅料按材料代码网查厂商与报价（R1、RL、R2、AD、POE、EVA、FL 等），入库后返回最低几家；可选把最低价写成估计价。",
       {"codes": {"type": "array", "items": {"type": "string"}, "description": "材料代码，如 [\"R1\", \"RL\", \"AD\"]"},
        "depth": {"type": "string", "enum": ["快", "标准", "深"]},
-       "apply_estimate": {"type": "boolean", "description": "是否把最低到厂价写成估计价（默认 true）"}}, ["codes"])
-def find_material_suppliers(codes: list[str], depth: str = "快", apply_estimate: bool = True):
+       "apply_estimate": {"type": "boolean", "description": "是否把最低到厂价写成估计价（默认 true）"},
+       "force": {"type": "boolean", "description": "24 小时内查过且没查到的料默认跳过；只有用户明确要求重查时才传 true"}}, ["codes"])
+def find_material_suppliers(codes: list[str], depth: str = "快", apply_estimate: bool = True, force: bool = False):
     from .. import daily_quotes
 
-    summary = daily_quotes.web_material_quotes(codes, depth=depth, pages_per_query=2)
+    summary = daily_quotes.web_material_quotes(codes, depth=depth, pages_per_query=2, force=force)
     applied = daily_quotes.apply_web_estimates(codes) if apply_estimate else []
-    lines = []
-    for code, s in summary.items():
-        lines.append(f"{code} {s['name']}：{s['rows']} 条报价（新增 {s['new']}）" +
-                     (f"，最低到厂 {s['best']['landed']:.0f}（{s['best']['supplier'][:16]}，{s['best']['region'] or '地区不详'}"
-                      + (f"，电话 {s['best']['contact']}" if s['best'].get('contact') else "") + "）" if s.get("best") else "，未找到报价"))
+    lines, misses = [], []
+    for code, st in summary.items():
+        if st.get("best"):
+            b = st["best"]
+            lines.append(f"{code} {st['name']}：{st['rows']} 条报价（新增 {st['new']}），"
+                         f"最低到厂 {b['landed']:.0f}（{b['supplier'][:16]}，{b['region'] or '地区不详'}"
+                         + (f"，电话 {b['contact']}" if b.get("contact") else "") + "）")
+        else:
+            misses.append(code)
+            hint = daily_quotes.HARD_TO_SOURCE.get(code)
+            cur = st.get("current")
+            lines.append(f"{code} {st['name']}：公开渠道查不到报价"
+                         + (f"（{hint}这类料本来就不在网上挂价，只能直接问厂家）" if hint else "")
+                         + (f"（{st['skipped'][:16]} 刚查过，这次直接跳过）" if st.get("skipped") else "")
+                         + (f"。成本先按现有估计价 {cur:.0f} 元/吨计入" if cur
+                            else "。价格卡上也没有价，请按你的经验给一个数并在回答里标明是假设"))
         for r in daily_quotes.material_rows(code, top=3)[1:]:
             lines.append(f"    备选：{r['supplier'][:16]} {r['landed_price']:.0f}（{r['region'] or '地区不详'}"
                          + (f"，{r['contact']}" if r.get("contact") else "") + "）")
     if applied:
         lines.append("已更新估计价：" + "；".join(f"{a['code']} → {a['landed']:.0f}" for a in applied) + "（网查价，未询价核实）")
+    if misses:
+        lines.append(f"【{'、'.join(misses)} 查不到，到此为止】不要再换关键词、也不要用别的工具找这几个料。"
+                     "直接在回答里写明“查不到公开报价，需向厂家询价”，按上面的价把成本算完，"
+                     "把方案表、采购清单和导出给出来。")
     return "\n".join(lines) or "没有结果。", []
 
 

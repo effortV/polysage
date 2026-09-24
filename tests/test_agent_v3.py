@@ -147,3 +147,114 @@ def test_pending_turn_detection_and_resume(fake_llm, monkeypatch):
     rows = db.q("SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,))
     assert rows[-1]["role"] == "assistant" and rows[-1]["content"] == out["content"]
     assert sum(1 for r in rows if r["role"] == "user") == 1   # 续跑不会重复添加用户消息
+
+
+def test_search_budget_stops_the_loop(fake_llm, monkeypatch):
+    """模型一直想查同一件事时：重复调用直接给回上次结果，检索次数用满就逼它作答。"""
+    from polysage.agents import runner
+    from polysage.agents import tools as T
+
+    ran = []
+
+    def fake_run(name, args):
+        ran.append((name, args.get("query") or args.get("codes")))
+        return f"{name} 没查到", []
+
+    monkeypatch.setattr(T, "run", fake_run)
+
+    calls = {"n": 0}
+
+    def fake_chat(messages, **kw):
+        last = messages[-1].get("content") or ""
+        if any(k in last for k in ("不要再查", "到此为止", "直接作答", "不要再调用工具")):
+            return runner.llm.ChatResult(content="AD 查不到公开报价，按估计价 12000 计入，需向助剂厂询价。方案照常给出。")
+        calls["n"] += 1
+        q = "PPA 母粒 价格" if calls["n"] % 2 else "PPA 母粒 报价"      # 换个关键词接着查
+        return runner.llm.ChatResult(content="", tool_calls=[{"id": f"c{calls['n']}", "name": "web_search",
+                                                              "arguments": {"query": q, "limit": 8}}])
+
+    monkeypatch.setattr(runner.llm, "chat", fake_chat)
+    monkeypatch.setattr(runner.llm, "chat_answer", fake_chat)
+
+    sid = runner.create_session("advisor", title="死循环测试")
+    out = runner.chat(sid, "AD 多少钱一吨")
+    assert "查不到" in out["content"]
+    assert len(ran) <= runner.SEARCH_BUDGET                 # 检索次数封顶，不会一直查下去
+    assert len(set(ran)) == len(ran)                        # 同参数的重复调用没有真的跑第二遍
+
+
+def test_material_miss_cooldown(fake_llm, monkeypatch):
+    """同一个料 24 小时内查过且没查到：直接跳过，不再浪费几分钟。"""
+    from polysage import daily_quotes as DQ
+
+    hits = {"n": 0}
+
+    def fake_search(*a, **kw):
+        hits["n"] += 1
+        return []
+
+    monkeypatch.setattr("polysage.sources.websearch.search", fake_search)
+    assert DQ.recent_miss("AD") is None
+    s1 = DQ.web_material_quotes(["AD"], depth="快", pages_per_query=1)
+    assert s1["AD"]["rows"] == 0 and not s1["AD"].get("skipped")
+    assert DQ.recent_miss("AD")                              # 记住了这次空手而回
+    n_after_first = hits["n"]
+
+    s2 = DQ.web_material_quotes(["AD"], depth="快", pages_per_query=1)
+    assert s2["AD"].get("skipped") and hits["n"] == n_after_first     # 第二次根本没去搜
+    s3 = DQ.web_material_quotes(["AD"], depth="快", pages_per_query=1, force=True)
+    assert not s3["AD"].get("skipped") and hits["n"] > n_after_first  # 明确要求时才重查
+
+
+def test_tool_timeout_and_dangling_call_recovery(fake_llm, monkeypatch):
+    """网站不响应时放弃这次调用；掐在“调了工具没结果”上的一轮，续跑能出回答。"""
+    import time as _t
+
+    from polysage import db
+    from polysage.agents import runner
+    from polysage.agents import tools as T
+
+    monkeypatch.setattr(runner, "TOOL_TIMEOUT_DEFAULT", 1)
+    monkeypatch.setattr(T, "run", lambda name, args: (_t.sleep(30), ("不该等到这个", []))[1])
+    text, _ = runner._run_tool("web_search", {"query": "卡住的站"})
+    assert "已经放弃这次调用" in text and "直接作答" in text
+
+    sid = runner.create_session("advisor", title="卡住测试")
+    runner._add(sid, "user", "AD 多少钱")
+    runner._add(sid, "assistant", "我查一下 AD。", tool_calls=[{"id": "x1", "name": "web_search", "arguments": {"query": "AD 价格"}}])
+    assert runner.is_pending(sid, stale_after=0)                     # 调了工具没结果，也算被掐断
+
+    seen = {}
+
+    def fake_chat(messages, **kw):
+        seen["last"] = messages[-1]
+        return runner.llm.ChatResult(content="AD 查不到公开报价，按估计价计入，需向厂家询价。")
+
+    monkeypatch.setattr(runner.llm, "chat", fake_chat)
+    monkeypatch.setattr(runner.llm, "chat_answer", fake_chat)
+    out = runner.resume(sid)
+    assert "查不到" in out["content"]
+    rows = db.q("SELECT role, content, tool_call_id FROM messages WHERE session_id=? ORDER BY id", (sid,))
+    assert any(r["role"] == "tool" and r["tool_call_id"] == "x1" and "被中断" in r["content"] for r in rows)
+    assert not runner.is_pending(sid, stale_after=0)
+
+
+def test_turn_deadline_forces_an_answer(fake_llm, monkeypatch):
+    """一轮跑太久：不再让模型调工具，直接要一个带假设的完整回答。"""
+    from polysage.agents import runner
+
+    monkeypatch.setattr(runner, "TURN_SECONDS", -1)          # 一进循环就算超时
+    got = {}
+
+    def fake_chat(messages, **kw):
+        got["tools"] = "tools" in kw
+        got["nudge"] = messages[-1].get("content") or ""
+        return runner.llm.ChatResult(content="按现有估计价给结论：AD 需询价，其余照常。")
+
+    monkeypatch.setattr(runner.llm, "chat", fake_chat)
+    monkeypatch.setattr(runner.llm, "chat_answer", fake_chat)
+
+    sid = runner.create_session("advisor", title="超时测试")
+    out = runner.chat(sid, "给我 top10")
+    assert "需询价" in out["content"]
+    assert not got["tools"] and "不要再调用工具" in got["nudge"]

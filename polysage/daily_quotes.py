@@ -615,8 +615,27 @@ def save_material_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {"new": n_new, "dup": n_dup}
 
 
+# 助剂 / 母料这类料公开渠道本来就不挂价，查不到是常态，不是故障
+HARD_TO_SOURCE = {"AD": "加工助剂母粒", "CP": "相容剂", "NUC": "成核剂/透明剂", "ADR": "扩链剂",
+                  "TFL": "透明填充母料", "TALC": "滑石粉母料", "ION": "离聚物"}
+MISS_COOLDOWN_HOURS = 24
+
+
+def recent_miss(code: str, hours: int = MISS_COOLDOWN_HOURS) -> str | None:
+    """最近一次网查这个料是不是空手而回；是就返回那次时间，用来跳过重复的无用检索。"""
+    import datetime as _dt
+
+    cut = (_dt.datetime.now() - _dt.timedelta(hours=hours)).isoformat(timespec="seconds")
+    for r in db.q("SELECT at, summary_json FROM sourcing_runs WHERE at>=? ORDER BY at DESC", (cut,)):
+        st = (db.loads(r["summary_json"], {}) or {}).get(code)
+        if st is None:
+            continue
+        return None if (st.get("rows") or 0) > 0 else r["at"]
+    return None
+
+
 def web_material_quotes(codes: list[str] | None = None, *, depth: str = "标准", pages_per_query: int = 3,
-                        echo: Any = None) -> dict[str, Any]:
+                        echo: Any = None, force: bool = False) -> dict[str, Any]:
     """辅料 / 再生料按材料代码网查厂商与报价（同样折到厂价），入库 channel=网查。"""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -630,6 +649,14 @@ def web_material_quotes(codes: list[str] | None = None, *, depth: str = "标准"
     for code in codes:
         m = MAT.get_material(code)
         if not m:
+            continue
+        miss_at = None if force else recent_miss(code)
+        if miss_at:
+            cur0 = MAT.current_prices().get(code, {})
+            summary[code] = {"name": m["name"], "pages": 0, "rows": 0, "new": 0, "updated": 0, "best": None,
+                             "current": cur0.get("actual") if cur0.get("actual") is not None else cur0.get("estimate"),
+                             "skipped": miss_at}
+            sourcing._log(f"[{code}] {miss_at} 刚查过且没查到，这次跳过（要强制再查传 force=True）", echo)
             continue
         seen: set[str] = set()
         pages: list[tuple[str, str, str]] = []
@@ -667,9 +694,11 @@ def web_material_quotes(codes: list[str] | None = None, *, depth: str = "标准"
                       (f"，最低到厂 {best['landed']:.0f}（{best['supplier'][:14]}，{best['region'] or '地区不详'}）"
                        f"，价格卡 {cur_price:.0f}" if best and cur_price else ""), echo)
         summary[code] = {"name": m["name"], "pages": len(pages), "rows": len(rows), **saved, "best": best, "current": cur_price}
-    db.insert("sourcing_runs", {"at": db.now(), "codes_json": db.dumps(codes),
-                                "summary_json": db.dumps({k: {kk: vv for kk, vv in v.items() if kk != "best"} for k, v in summary.items()}),
-                                "note": f"辅料网查 depth={depth}"})
+    ran = {k: v for k, v in summary.items() if not v.get("skipped")}      # 跳过的不记账，否则冷却期会无限续
+    if ran:
+        db.insert("sourcing_runs", {"at": db.now(), "codes_json": db.dumps(list(ran)),
+                                    "summary_json": db.dumps({k: {kk: vv for kk, vv in v.items() if kk != "best"} for k, v in ran.items()}),
+                                    "note": f"辅料网查 depth={depth}"})
     return summary
 
 

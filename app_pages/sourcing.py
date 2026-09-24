@@ -208,9 +208,11 @@ def _render_tab_run() -> None:
     if st.button("网查辅料报价", disabled=jobs.is_running() or not pick_codes, key="mat_web"):
         with st.spinner("检索与抽取中（每种料约 1 分钟）…"):
             try:
-                summary = daily_quotes.web_material_quotes(pick_codes, depth=mdepth, pages_per_query=2)
+                summary = daily_quotes.web_material_quotes(pick_codes, depth=mdepth, pages_per_query=2, force=True)
                 applied = daily_quotes.apply_web_estimates(pick_codes) if apply_est else []
-                msg = "；".join(f"{c} {s['rows']} 条（新增 {s['new']}）" for c, s in summary.items())
+                msg = "；".join(f"{c} {s['rows']} 条（新增 {s['new']}）" if s["rows"]
+                                else f"{c} 查不到公开报价" + ("（这类料只能直接问厂家）" if c in daily_quotes.HARD_TO_SOURCE else "")
+                                for c, s in summary.items())
                 if applied:
                     msg += " | 估计价已更新：" + "，".join(f"{a['code']} → {a['landed']:.0f}" for a in applied)
                 st.success(msg)
