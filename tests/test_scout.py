@@ -9,8 +9,9 @@ from polysage.sources.base import SearchHit
 def test_seed_only_base_materials(home):
     """种子里只有现配方在用的 4 种，且不再写入附录 D 假设价。"""
     seeded = [m["code"] for m in MAT.SEED_MATERIALS]
-    assert seeded == ["LL", "LD", "HD", "R1"] == list(MAT.BASE_CODES)
-    assert [m["price"] for m in MAT.SEED_MATERIALS] == [12000, None, None, 8000]      # 只留甲方口述价
+    assert seeded == ["LL", "R1", "FL", "HD", "LD"]
+    assert list(MAT.BASE_CODES) == ["LL", "R1", "FL", "HD"]                         # ABA 现配方在用的料
+    assert [m["price"] for m in MAT.SEED_MATERIALS] == [12000, 8250, 2500, None, None]   # 只留甲方口述价
     MAT.seed_materials()
     assert {c for c in seeded} <= {m["code"] for m in MAT.list_materials(active_only=False)}
     assert not db.q("SELECT id FROM prices WHERE COALESCE(source,'') || COALESCE(note,'') LIKE ?",
@@ -30,7 +31,7 @@ def test_purge_assumed_keeps_evidenced(home):
     res = MAT.purge_assumed()
     left = {m["code"] for m in MAT.list_materials(active_only=False)}
     assert "FAKE" not in left and "FAKE" in res["removed"]
-    assert {"LL", "LD", "HD", "R1", "REAL", "FOUND"} <= left
+    assert {"LL", "R1", "FL", "HD", "REAL", "FOUND"} <= left
     assert res["prices_deleted"] == 1
     assert not db.q("SELECT id FROM prices WHERE material_code='FAKE'")
 

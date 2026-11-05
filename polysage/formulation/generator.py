@@ -126,7 +126,8 @@ def generate(n_out: int = 40, *, structure: str = "mono", n_samples: int = 20000
     bounds = c.get("component_bounds", {})
     limit = cost_limit or c.get("cost_limit", 8000)
     theme_pool = dict(THEMES)
-    active = {m["code"]: m for m in list_materials(active_only=True)}
+    # 标了“否”（外观不符、禁用）的料不参与：内置主题里写死的代码也可能被新发现的料占用
+    active = {m["code"]: m for m in list_materials(active_only=True) if not str(m.get("use_flag") or "").startswith("否")}
     known = {x for th in theme_pool.values() for v in th.values() if isinstance(v, list) for x in v} | {"LL", "AD"}
     recycled_now = [code for code, m in active.items() if m.get("is_recycled")]
     # 原料库里新来的料（智能体发现的、手工登记的）自动成为一个主题，不然它们永远进不了方案
@@ -142,6 +143,9 @@ def generate(n_out: int = 40, *, structure: str = "mono", n_samples: int = 20000
     # 主题要的料库里没有就别留着，否则一条候选也采不出来
     theme_pool = {k: v for k, v in theme_pool.items()
                   if all(x in active for x in list(v.get("toughness") or []) + list(v.get("require") or []))}
+    # 主题里可选的料也只留库里能用的
+    theme_pool = {k: {kk: ([x for x in vv if x in active] if isinstance(vv, list) else vv) for kk, vv in v.items()}
+                  for k, v in theme_pool.items()}
     if not theme_pool:
         # 库里只剩现配方那几种料：就用它们自己组合（调再生料比例、减 HDPE）
         optional = [code for code in active if code not in recycled_now and code != "AD"]

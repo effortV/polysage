@@ -8,32 +8,43 @@ from ..config import KB
 
 TASK_PATH = KB["project"] / "task.yaml"
 
+TASK_VERSION = 2          # 2 = ABA 三层、三项指标（2026-11 甲方调整）
+
 DEFAULT_TASK: dict[str, Any] = {
+    "version": TASK_VERSION,
     "product": {
-        "name": "PE 包装膜",
-        "structure": "mono",          # mono | ABA
-        "thickness_um": None,           # 待甲方提供
+        "name": "PE 包装膜（ABA 三层共挤）",
+        "structure": "ABA",
+        "layers": "A 层（两面表层）约 45%、B 层（芯层）约 55%，比例可调",
+        "thickness": "2~8 丝可调，常用 3~6 丝（1 丝 = 10 μm）；越厚越牢、透光越差",
+        "thickness_um": None,
         "process": "吹膜",
     },
     "current_formulation": {
-        "LL": {"pct": 60, "grade": "C4 LLDPE（7042 类，待确认）"},
-        "LD": {"pct": 10, "grade": "LDPE（2426H 类，待确认）"},
-        "HD": {"pct": 5, "grade": "HDPE 膜料（5000S 类，待确认）"},
-        "R1": {"pct": 25, "grade": "再生高压一级透明料"},
+        "LL": {"pct": 66.7, "grade": "LLDPE（每 75 kg 基底里 50 kg）"},
+        "R1": {"pct": 33.3, "grade": "高压再生回料，接近新料颜色，8000~8500 元/吨（每 75 kg 基底里 25 kg）"},
     },
-    "formulation_note": "甲方口述：LLDPE 60%，LDPE+HDPE+再生一级料合计 40%；内部比例 10/5/25 为假设，待确认",
-    "red_lines": ["拉伸强度", "撕裂强度", "穿刺力", "热封强度"],
-    "cost": {"current": 8000, "limit": 8000, "target": 7600, "unit": "元/吨", "note": "甲方口述约 8000；正式以回填实价为准"},
-    "targets": {"replace_lldpe_pct": 30, "note": "甲方希望替代约 30% LLDPE；接受其他 PE 牌号、调比例、少量其他材料"},
+    "formulation_note": ("A、B 两层共用上面的基底；填充母料（约 2500 元/吨）只加在 B 层，一般 10~50%；"
+                         "需要挺度和硬度时 B 层加约 10% 低压 HDPE。以上是大致情况，不是精确配方。"),
+    "red_lines": ["纵向拉断力（N）", "横向拉断力（N）", "透光度（0 一般 / 1 好 / 2 很好，人工对照标样判档）"],
+    "cost": {"current": 9200, "limit": 9200, "target": 8500, "unit": "元/吨",
+             "note": "按吨计价；现配方不加填充约 9200，随价格卡与期货变化"},
+    "targets": {"note": ("三项性能满足要求（不降或提升）的前提下元/吨最低；按透光三档分别给最低成本方案；"
+                         "可按当前价或期货价重算；找能提性能、降成本的新材料（文献/专利/网查，必须买得到）；"
+                         "现在没有数据，先定性，之后按实验回填转数据驱动")},
     "search": {"year_from": 2000, "max_hits_per_query": 15, "languages": ["zh", "en"]},
 }
 
 
 def load() -> dict[str, Any]:
     t = kb.read_yaml(TASK_PATH)
-    if not t:
-        kb.write_yaml(TASK_PATH, DEFAULT_TASK)
-        return dict(DEFAULT_TASK)
+    if not t or int(t.get("version") or 1) < TASK_VERSION:
+        # 旧任务书是单层、四项指标（拉伸/撕裂/穿刺/热封）：按甲方 2026-11 的调整整体换掉，只保留检索设置
+        new = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_TASK.items()}
+        if t and isinstance(t.get("search"), dict):
+            new["search"] = {**DEFAULT_TASK["search"], **t["search"]}
+        kb.write_yaml(TASK_PATH, new)
+        return new
     for k, v in DEFAULT_TASK.items():
         t.setdefault(k, v)
     return t
@@ -48,9 +59,8 @@ def brief(t: dict[str, Any] | None = None) -> str:
     t = t or load()
     p = t["product"]
     comps = "、".join(f"{k} {v['pct']}%（{v.get('grade', '')}）" for k, v in t["current_formulation"].items())
-    return (f"产品：{p['name']}，{p['process']}，{'单层' if p['structure'] == 'mono' else '三层 ABA'}，"
-            f"膜厚 {p.get('thickness_um') or '待定'} μm。\n"
-            f"现配方：{comps}。{t.get('formulation_note', '')}\n"
-            f"红线：{'、'.join(t['red_lines'])} 全部 ≥ base。\n"
-            f"成本：现约 {t['cost']['current']} {t['cost']['unit']}，上限 {t['cost']['limit']}，目标 ≤ {t['cost']['target']}。\n"
-            f"甲方意愿：{t['targets'].get('note', '')}")
+    return (f"产品：{p['name']}，{p['process']}；{p.get('layers', '')}；厚度 {p.get('thickness', '待定')}。\n"
+            f"现配方基底：{comps}。{t.get('formulation_note', '')}\n"
+            f"性能指标：{'、'.join(t['red_lines'])}。\n"
+            f"成本：{t['cost'].get('note', '')}（{t['cost']['unit']}）。\n"
+            f"目标：{t['targets'].get('note', '')}")

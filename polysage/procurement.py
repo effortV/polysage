@@ -192,6 +192,8 @@ BUYABLE_TIERS = ("actual", "daily", "web")
 
 def in_base(code: str) -> bool:
     """现配方正在用的料：工厂本来就在买，视为可采购（只是还没登记报价）。"""
+    if code in MAT.BASE_CODES:
+        return True
     try:
         from .formulation import constraints as C
 

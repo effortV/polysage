@@ -659,3 +659,7 @@ def save_review(title: str, content: str):
     path = KB["review"] / f"{db.now()[:10]}_{title[:40].replace('/', '_')}.md"
     kb.write_text(path, f"# {title}\n\n{content}\n")
     return f"已保存：{path.name}", []
+
+
+# ABA 三层膜的工具（分档寻优、评估、价格场景、实验闭环、系数表）
+from . import tools_aba  # noqa: E402,F401

@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import settings
-from . import stage_collect, stage_design, stage_experiment, stage_mechanism, stage_report, stage_scout, state
+from . import stage_collect, stage_experiment, stage_mechanism, stage_report, stage_scout, state
+from . import stage_aba
 
 DISCOVERY = ["collect", "mechanism", "scout", "design", "report", "doe"]
 
@@ -35,18 +36,19 @@ def run_stage(key: str, echo: Callable[[str], None] | None = _echo, **kw: Any) -
         return stage_mechanism.run(echo, **kw)
     if key == "scout":
         return stage_scout.run(echo, **kw)
+    # ④⑥⑦⑧⑨ 走 ABA 三层膜版本（三项指标、按吨计价、厚度可调）
     if key == "design":
-        return stage_design.run(echo, **kw)
+        return stage_aba.run_design(echo, **kw)
     if key == "report":
         return stage_report.run(echo)
     if key == "doe":
-        return stage_experiment.run_doe(echo)
+        return stage_aba.run_doe(echo)
     if key == "learn":
-        return stage_experiment.run_learn(echo, **kw)
+        return stage_aba.run_learn(echo, **kw)
     if key == "scan":
-        return stage_experiment.run_scan(echo, **kw)
+        return stage_aba.run_scan(echo, **kw)
     if key == "review":
-        return stage_experiment.run_review(echo=echo, **kw)
+        return stage_aba.run_review(echo=echo, **kw)
     raise KeyError(key)
 
 

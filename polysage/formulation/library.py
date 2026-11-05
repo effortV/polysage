@@ -108,7 +108,9 @@ def list_formulations(status: str | None = None) -> list[dict[str, Any]]:
     for r in rows:
         r["components"] = db.loads(r["components_json"], {})
         r["predicted"] = db.loads(r.get("predicted_json"), {})
-        r["formula"] = COST.format_components(r["components"])
+        # ABA 三层：按层显示（A 层 / B 层 / 厚度），整膜组分只用来算成本与采购
+        r["formula"] = (r["predicted"].get("aba_text") if r.get("structure") == "ABA" and r["predicted"].get("aba_text")
+                        else COST.format_components(r["components"]))
         if r.get("cost_used") is None:
             r["cost_used"] = r["cost_actual"] if r.get("cost_actual") is not None else r.get("cost_estimate")
         if r.get("cost_actual") is not None:

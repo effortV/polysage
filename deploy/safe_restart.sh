@@ -12,18 +12,16 @@ import sys
 from datetime import datetime, timedelta
 
 from polysage import db, jobs
+from polysage.agents import runner
 
 busy = []
 if jobs.is_running():
     busy.append("后台任务 " + (jobs.current() or ""))
-cut = (datetime.now() - timedelta(minutes=3)).isoformat(timespec="seconds")
+cut = (datetime.now() - timedelta(minutes=5)).isoformat(timespec="seconds")
 for s in db.q("SELECT id FROM sessions"):
-    rows = db.q("SELECT role, content, created_at FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1", (s["id"],))
-    if not rows:
-        continue
-    last = rows[0]
-    pending = last["role"] == "tool" or (last["role"] == "assistant" and not (last["content"] or "").strip())
-    if pending and (last["created_at"] or "") >= cut:
+    rows = db.q("SELECT created_at FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1", (s["id"],))
+    # 判定“这轮还没跑完”跟界面用同一套逻辑（也认得“调了工具还没有结果”），别再各写一份
+    if rows and (rows[0]["created_at"] or "") >= cut and runner.is_pending(s["id"], stale_after=0):
         busy.append(f"对话 {s['id']} 正在回答中")
 print("; ".join(busy))
 sys.exit(1 if busy else 0)

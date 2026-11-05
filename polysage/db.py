@@ -265,6 +265,23 @@ CREATE TABLE IF NOT EXISTS price_forecasts (
     sources_json TEXT,
     method_json TEXT
 );
+
+-- ABA 试验：每一组试验配方与回填的实测（纵/横向拉断力 N、透光档 0/1/2、实测厚度）
+CREATE TABLE IF NOT EXISTS aba_trials (
+    id INTEGER PRIMARY KEY,
+    round INTEGER NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    purpose TEXT,
+    design_json TEXT NOT NULL,
+    predicted_json TEXT,
+    t_measured REAL,
+    md_n REAL,
+    td_n REAL,
+    grade INTEGER,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    measured_at TEXT
+);
 """
 
 # 旧库升级：materials 表新增列（幂等）

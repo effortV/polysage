@@ -4,20 +4,16 @@ import pandas as pd
 import streamlit as st
 
 from polysage import db, jobs, pricing, ui
-from polysage.config import KB, settings
-from polysage.formulation import constraints as C
-from polysage.formulation import cost as COST
-from polysage.formulation import export as X
-from polysage.formulation import generator as G
+from polysage.config import settings
 from polysage.formulation import library as L
 from polysage.formulation import materials as MAT
-from polysage.formulation import qualitative as Q
 
 ui.page_header("原料与价格", "原料库、价格卡与联动、配方库、候选生成、约束。")
 MAT.seed_materials()
 L.seed_top20()
 
-tab_m, tab_p, tab_f, tab_g, tab_c = st.tabs(["原料库", "价格卡与回填", "配方库", "生成与评估", "约束"], key="materials-workspace-tab", on_change="rerun")
+# 旧的单层“生成与评估”“约束”页已由「配方推荐」里的分档寻优、评估一个配方、系数表取代
+tab_m, tab_p, tab_f = st.tabs(["原料库", "价格卡与回填", "配方库"], key="materials-workspace-tab", on_change="rerun")
 
 def _render_tab_m() -> None:
     mats = MAT.list_materials(active_only=False)
@@ -172,215 +168,86 @@ def _render_tab_p() -> None:
             st.success(f"已撤销；现配方成本 {res['base_cost']:.0f}，{res['n_flagged']} 个配方明显变化")
             st.rerun()
 
+def _parse_layer(txt: str) -> dict[str, float]:
+    comps: dict[str, float] = {}
+    for part in (txt or "").replace("，", "/").replace(",", "/").split("/"):
+        if part.strip():
+            k, v = part.split()
+            comps[k.strip()] = float(v)
+    return comps
+
+
 def _render_tab_f() -> None:
+    from polysage.aba import report as RP
+    from polysage.aba.model import Ctx, Design, base_design
+
     forms = L.list_formulations()
-    base_cost = COST.compute_simple(C.base_formulation())
-    st.caption("配方来源：研发流水线 ④ / ⑧、配方推荐页与对话推荐（自动入库）、这里手工录入。相同组分不会重复入库。")
-    with ui.expander("手工录入配方"):
+    ctx = Ctx()
+    ref = base_design()
+    ref_cost = ctx.cost(ref)
+    st.caption("配方来源：配方推荐（分档寻优、对话）、研发流水线 ④、这里手工录入。相同组分不会重复入库。"
+               "ABA 配方按层显示；整膜组分只用来算成本和采购。")
+    with ui.expander("手工录入 ABA 配方"):
         with st.form("add_formulation"):
-            comps_txt = st.text_input("组分（代码 百分比，用 / 分隔，合计 100）", placeholder="LL 50 / R1 45 / AD 5")
-            r1, r2 = st.columns(2)
-            rationale = r1.text_input("思路 / 理由")
-            risks = r2.text_input("风险 / 观察点")
+            c1, c2 = st.columns(2)
+            a_txt = c1.text_input("A 层（表层）组分，合计 100", placeholder="LL 66.7 / R1 33.3")
+            b_txt = c2.text_input("B 层（芯层）组分，合计 100", placeholder="LL 53.4 / R1 26.6 / FL 20")
+            c3, c4, c5 = st.columns(3)
+            a_ratio = c3.number_input("A 层占比", 0.2, 0.6, 0.45, step=0.05)
+            thick = c4.number_input("厚度（丝）", 2.0, 8.0, 4.5, step=0.5)
+            rationale = c5.text_input("思路 / 备注")
             if st.form_submit_button("存入配方库"):
-                comps: dict[str, float] = {}
                 try:
-                    for part in comps_txt.replace("，", "/").replace(",", "/").split("/"):
-                        k, v = part.split()
-                        comps[k.strip().upper()] = float(v)
+                    d = Design(a=_parse_layer(a_txt), b=_parse_layer(b_txt), a_ratio=a_ratio, thickness=thick)
                 except ValueError:
-                    st.error("格式不对，例如：LL 50 / R1 45 / AD 5")
-                    comps = {}
-                if comps:
-                    unknown = [k for k in comps if not MAT.get_material(k)]
+                    st.error("格式不对，例如：LL 66.7 / R1 33.3")
+                    d = None
+                if d:
+                    unknown = [k for k in list(d.a) + list(d.b) if not MAT.get_material(k)]
+                    issues = ctx.check(d)
                     if unknown:
                         st.error(f"原料库没有代码：{', '.join(unknown)}（先到「原料库」登记）")
-                    elif abs(sum(comps.values()) - 100) > 0.5:
-                        st.error(f"合计 {sum(comps.values()):.1f}%，必须为 100%")
-                    elif (dup := L.find_by_components(comps)):
-                        st.warning(f"已有相同组分的配方 {dup['code']}（来源：{dup.get('origin') or '-'}）")
+                    elif issues:
+                        st.error("；".join(issues))
                     else:
-                        try:
-                            code = L.next_code("G")
-                            L.save_formulation(code, comps, rationale=rationale, risks=risks, status="候选", origin=f"手工录入 {db.now()[:10]}")
-                        except L.NotPurchasable as e:
-                            st.error(f"未入库——{e}。配方库只收买得到的料：先到「供应商与报价」网查该料报价，或在价格卡登记正式报价。")
-                        else:
-                            st.success(f"已存入 {code}")
+                        ev = ctx.evaluate(d, ref)
+                        ev["drivers"] = ctx.drivers(d, ref)
+                        if rationale:
+                            ev["drivers"] = [rationale] + ev["drivers"]
+                        out = {"groups": {"手工": {ev["grade"]: [ev]}}, "scenario": {"label": "当前价"}}
+                        codes = RP.save_to_library(out, origin="手工录入")
+                        if codes:
+                            st.success(f"已存入 {codes[0]}：{d.text()}")
                             st.rerun()
+                        else:
+                            st.error("未入库：配方里有买不到的料（先到「供应商与报价」网查报价，或在价格卡登记正式报价）。")
+    show_old = st.toggle("显示旧版单层配方（四项指标时期）", value=False)
+    if not show_old:
+        forms = [f for f in forms if f.get("structure") == "ABA"]
     fdf = pd.DataFrame([{"编号": f["code"], "结构": f["structure"], "配方": f["formula"],
                          "当前成本": round(f["cost_used"]) if f.get("cost_used") else None, "口径": f.get("cost_tier"),
-                         "估计价成本": round(f["cost_estimate"]) if f["cost_estimate"] else None,
-                         "实价成本": round(f["cost_actual"]) if f["cost_actual"] else None,
-                         "降本": round(base_cost - f["cost_used"]) if base_cost and f.get("cost_used") else None,
-                         "面积指数": f["area_index"], "四项预期": (f["predicted"] or {}).get("effects_short"), "优先级": f["priority"],
-                         "状态": f["status"], "思路": f["rationale"], "风险": f["risks"], "来源": f["origin"],
-                         "原料采购（怎么来的）": f.get("sourcing_note") or "", "全部可采购": "是" if f.get("buyable") else "否"} for f in forms])
-    st.dataframe(fdf, hide_index=True, height=480, **ui.WIDE)
+                         "较现配方": round(ref_cost - f["cost_used"]) if ref_cost and f.get("cost_used") else None,
+                         "三项预期": (f["predicted"] or {}).get("effects_short"),
+                         "把握": (f["predicted"] or {}).get("pass_confidence"), "分档": f["priority"],
+                         "状态": f["status"], "依据": f["rationale"], "来源": f["origin"],
+                         "原料采购（怎么来的）": f.get("sourcing_note") or "", "全部可采购": "是" if f.get("buyable") else "否"}
+                        for f in forms])
+    if fdf.empty:
+        st.caption("还没有 ABA 配方：到「配方推荐 › 分档最低成本」算一次，或在这里手工录入。")
+    else:
+        st.dataframe(fdf, hide_index=True, height=480, **ui.WIDE)
     s1, s2, s3 = ui.hrow(3)
     code = s1.selectbox("改状态", [f["code"] for f in forms]) if forms else None
     status = s2.selectbox("状态", ["候选", "推荐", "试验中", "过关", "淘汰"])
     if s3.button("更新", disabled=not code):
         L.set_status(code, status)
         st.rerun()
-    top_path = KB["formulation"] / "Top20候选配方_初步预计.xlsx"
-    if top_path.exists():
-        st.download_button("下载 Top 20 表", top_path.read_bytes(), file_name=top_path.name)
-
-def _render_tab_g() -> None:
-    st.caption("在约束内生成候选并核算成本；可选四项性能定性评估与排序。")
-    c1, c3 = st.columns(2)
-    n = c1.slider("生成数量", 5, 60, 20)
-    themes = c3.multiselect("限定思路", list(G.THEMES))
-    if st.button("生成候选"):
-        cands = G.generate(n_out=n, themes=themes or None)
-        st.session_state["cands"] = cands
-    cands = st.session_state.get("cands") or []
-    if cands:
-        st.dataframe(pd.DataFrame([{"思路": c.theme, "配方": c.text(), "成本": c.cost, "口径": c.cost_tier, "降本%": round(c.savings_pct or 0, 1),
-                                    "密度": c.density, "面积指数": c.area_index} for c in cands]), hide_index=True, **ui.WIDE)
-        if st.button("定性评估并排序", disabled=not settings.llm_ready):
-            with st.spinner("评估中…"):
-                ranked = Q.rank(cands, Q.assess(cands), top_n=20)
-            st.session_state["ranked"] = ranked
-        ranked = st.session_state.get("ranked")
-        if ranked:
-            st.dataframe(X.top20_dataframe(ranked), hide_index=True, **ui.WIDE)
-            if st.button("导出 Top 20 与询价清单"):
-                p1 = X.export_top20(ranked)
-                p2 = X.inquiry_list(ranked)
-                st.success(f"已导出：{p1.name}、{p2.name}")
-    with st.container(border=True):
-        st.markdown("##### 手工核算")
-        st.caption("格式如 LL 45, LD 10, HD 5, R1 39, AD 1")
-        txt = st.text_input("配方", key="manual")
-        if txt:
-            try:
-                comps = {}
-                for part in txt.replace("/", ",").split(","):
-                    k, v = part.split()
-                    comps[k.strip()] = float(v)
-                cd = G.evaluate(comps)
-                st.write({"配方": cd.text(), "成本": cd.cost, "口径": cd.cost_tier, "降本%": round(cd.savings_pct or 0, 1), "密度": cd.density,
-                          "面积指数": cd.area_index, "约束问题": cd.issues or "无"})
-            except Exception as e:  # noqa: BLE001
-                st.error(f"格式错误：{e}")
-
-def _render_tab_c() -> None:
-    import altair as alt
-
-    from polysage.pipeline import task as TASK
-
-    c = C.load()
-    t = TASK.load()
-    mats_all = {m["code"]: m for m in MAT.list_materials(active_only=False)}
-    base_f = C.base_formulation(c)
-
-    # ---- 现配方 ----
-    st.markdown("##### 现配方（重量 %）")
-    cols_b = st.columns(6)
-    new_base: dict[str, float] = {}
-    codes_b = list(base_f) + [k for k in ("LLC", "RL") if k not in base_f]
-    for i_, code in enumerate(codes_b):
-        new_base[code] = cols_b[i_ % 6].number_input(f"{code} {mats_all.get(code, {}).get('name', '')[:12]}", 0.0, 100.0, float(base_f.get(code, 0.0)),
-                                                     step=1.0, key=f"basef_{code}")
-    total_b = sum(new_base.values())
-    base_cost_now = COST.compute_simple({k: v for k, v in new_base.items() if v})
-    st.caption(f"合计 {total_b:g}%　按当前价格卡成本 {base_cost_now:,.0f} 元/吨" if base_cost_now else f"合计 {total_b:g}%")
-
-    # ---- 分组规则：可视化 + 可编辑 ----
-    st.markdown("##### 分组用量规则")
-    st.caption("横条为允许区间，圆点为现配方实际值。")
-    groups = c.get("groups", {})
-    rule_rows = []
-    for r in c.get("rules", []):
-        members = groups.get(r["group"], [])
-        cur_val = sum(new_base.get(k, 0.0) for k in members)
-        applies = r.get("applies") or "全部"
-        active = applies != "core"
-        rule_rows.append({"规则": r["name"], "组": r["group"], "成员": " ".join(members), "下限%": r.get("min"), "上限%": r.get("max"),
-                          "适用": {"mono": "单层", "core": "三层芯层"}.get(applies, "全部"),
-                          "现配方值%": round(cur_val, 1), "状态": ("—" if not active else ("✅" if (r.get("min", -1) <= cur_val <= r.get("max", 1e9)) else "⚠ 超出")),
-                          "理由": r.get("reason", "")})
-    rdf = pd.DataFrame(rule_rows)
-    chart_df = rdf[rdf["状态"] != "—"].copy()
-    chart_df["lo"] = chart_df["下限%"].fillna(0)
-    chart_df["hi"] = chart_df["上限%"].fillna(100)
-    bars = alt.Chart(chart_df).mark_bar(color="#cfd8e3", height=14).encode(
-        x=alt.X("lo:Q", title="重量 %", scale=alt.Scale(domain=[0, 100])), x2="hi:Q", y=alt.Y("规则:N", sort=None, title=None))
-    pts = alt.Chart(chart_df).mark_point(filled=True, size=90).encode(
-        x="现配方值%:Q", y=alt.Y("规则:N", sort=None), color=alt.condition(alt.datum.状态 == "✅", alt.value("#2e7d32"), alt.value("#c62828")),
-        tooltip=["规则", "下限%", "上限%", "现配方值%", "理由"])
-    st.altair_chart((bars + pts).properties(height=28 * max(1, len(chart_df))), use_container_width=True)
-    edited_rules = st.data_editor(rdf[["规则", "适用", "下限%", "上限%", "理由", "成员", "现配方值%", "状态"]], hide_index=True, key="rules_editor",
-                                  disabled=["规则", "适用", "成员", "现配方值%", "状态"], **ui.WIDE)
-
-    # ---- 单组分范围 ----
-    with ui.expander("单组分范围（生成候选时每种料的上下限）"):
-        bounds = c.get("component_bounds", {})
-        bdf = pd.DataFrame([{"代码": k, "材料": mats_all.get(k, {}).get("name", ""), "下限%": v[0], "上限%": v[1]} for k, v in bounds.items()])
-        edited_bounds = st.data_editor(bdf, hide_index=True, key="bounds_editor", disabled=["代码", "材料"], **ui.WIDE)
-
-    # ---- 成本上限 ----
-    st.markdown("##### 成本上限")
-    m1, m2, m3 = st.columns(3)
-    auto_limit = m1.toggle("上限 = 现配方成本（自动跟随价格）", value=bool(c.get("cost_limit_auto", True)))
-    manual_limit = m2.number_input("手动上限 元/吨", 0, 50000, int(c.get("cost_limit") or 0), disabled=auto_limit)
-    m3.caption(f"当前上限 {c.get('cost_limit'):,}，目标 {c.get('cost_target'):,}（目标 = 上限 × 0.95）")
-
-    if st.button("保存约束", type="primary"):
-        # 规则
-        rules = c.get("rules", [])
-        for i_, r in enumerate(rules):
-            row = edited_rules.iloc[i_]
-            for key, col in (("min", "下限%"), ("max", "上限%")):
-                v = row[col]
-                if pd.isna(v) or v == "":
-                    r.pop(key, None)
-                else:
-                    r[key] = float(v)
-            r["reason"] = str(row["理由"] or "")
-        c["rules"] = rules
-        # 单组分范围
-        for _, row in edited_bounds.iterrows():
-            c["component_bounds"][row["代码"]] = [float(row["下限%"]), float(row["上限%"])]
-        # 现配方
-        if abs(total_b - 100) > 0.5:
-            st.error(f"现配方合计 {total_b:g}% ≠ 100%，未保存")
-            st.stop()
-        c["base_formulation"] = {k: v for k, v in new_base.items() if v}
-        t["current_formulation"] = {k: {"pct": v, "grade": (t.get("current_formulation", {}).get(k, {}) or {}).get("grade", mats_all.get(k, {}).get("grade", ""))}
-                                    for k, v in c["base_formulation"].items()}
-        TASK.save(t)
-        # 成本上限
-        if auto_limit:
-            c["cost_limit"], c["cost_target"] = "auto", "auto"
-            c.pop("cost_limit_auto", None)
-            c.pop("cost_target_auto", None)
-        else:
-            c["cost_limit"] = int(manual_limit)
-            c["cost_target"] = int(manual_limit * 0.95)
-            c.pop("cost_limit_auto", None)
-            c.pop("cost_target_auto", None)
-        C.save(c)
-        st.success("已保存；重新出方案生效")
-        st.rerun()
-    with ui.expander("直接编辑 YAML"):
-        import yaml
-
-        txt = st.text_area("constraints.yaml", value=yaml.safe_dump(c, allow_unicode=True, sort_keys=False), height=300)
-        if st.button("按 YAML 保存"):
-            C.save(yaml.safe_load(txt))
-            st.success("已保存")
-            st.rerun()
 
 
 _TAB_RENDERERS = (
     (tab_m, _render_tab_m),
     (tab_p, _render_tab_p),
     (tab_f, _render_tab_f),
-    (tab_g, _render_tab_g),
-    (tab_c, _render_tab_c),
 )
 for _tab, _renderer in _TAB_RENDERERS:
     with _tab:

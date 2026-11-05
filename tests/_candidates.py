@@ -108,7 +108,8 @@ def seed_candidates() -> int:
         price = m.pop("price")
         effects = m.pop("effects")
         upsert_material({**m, "effects": effects, "origin": "测试候选池"})
-        if price and current_prices().get(m["code"], {}).get("estimate") is None:
+        # 老测试的期望数字是按这套假设价算的：正式种子价（如 R1 8250、FL 2500）不同时，用假设价盖过去
+        if price and current_prices().get(m["code"], {}).get("estimate") != float(price):
             add_price(m["code"], price, "estimate", source="测试候选池假设价", price_date="2026-09")
         n += 1
     return n

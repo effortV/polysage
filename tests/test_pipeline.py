@@ -1,22 +1,19 @@
 """流水线离线端到端：①～⑥ 发现阶段 + ⑦～⑨ 实验闭环（假 LLM + 假检索源）。"""
 from __future__ import annotations
 
-from conftest import seed_library
-
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from polysage import db, kb
 from polysage.config import KB
-from polysage.pipeline import runner, stage_experiment, state, task
+from polysage.pipeline import runner, state, task
 
-from _candidates import seed_candidates      # 测试候选材料池（正式库只预置 4 种基础料）
 
 
 def test_discovery_pipeline(fake_llm, fake_sources):
-    res = runner.run_discovery(resume=False, echo=None, max_hits_per_query=3, max_keep=40, do_prices=True)
+    db.execute("DELETE FROM aba_trials")          # 别的用例留下的试验会让 ⑥ 只导出旧轮次
+    runner.run_discovery(resume=False, echo=None, max_hits_per_query=3, max_keep=40, do_prices=True)
     st = state.load()["stages"]
     for key in ("collect", "mechanism", "scout", "design", "report", "doe"):
         assert st[key]["status"] == "done", (key, st[key].get("error"))
@@ -27,71 +24,63 @@ def test_discovery_pipeline(fake_llm, fake_sources):
     assert st["scout"]["n_cards"] > 0 and st["scout"]["n_prices"] > 0
     assert db.q1("SELECT COUNT(*) c FROM prices WHERE price_type='estimate' AND url LIKE 'https://example.com/%'")["c"] > 0
     assert (KB["project"] / "候选材料全清单.xlsx").exists()
-    assert len(st["design"]["top"]) == 20
-    assert (KB["formulation"] / "Top20候选配方_初步预计.xlsx").exists() and (KB["price"] / "询价清单.xlsx").exists()
+    assert len(st["design"]["top"]) >= 3 and all("丝" in r["formula"] for r in st["design"]["top"])   # ABA 分档方案
+    assert all(Path(p).exists() for p in st["design"]["outputs"])
     docs = [Path(p) for p in st["report"]["outputs"]]
     assert all(p.exists() and p.stat().st_size > 5000 for p in docs)
-    assert stage_experiment.count_design() >= 24
-    assert (KB["experiment"] / "数据表模板.csv").exists()
+    from polysage.aba import experiments as AE
+
+    assert len(AE.trials()) >= 14                                   # ⑥ 首轮：3 个厚度对照 + D-最优
     # 新材料是智能体从网页上找来的：每条都带来源网址，而不是凭空补的清单
     found = db.q("SELECT code, name, source_url FROM materials WHERE COALESCE(source_url,'') <> ''")
     assert found and all(r["source_url"].startswith("http") for r in found)
 
 
-def test_experiment_loop(fake_llm, fake_sources):
-    from polysage.formulation import library as L, materials as MAT
-    from polysage.ml import dataset as D
-
-    MAT.seed_materials()
-    seed_candidates()
-    seed_library()
-    design = stage_experiment.doe_round1(priority=[f["comps"] for f in L.SEED_TOP20[:6]])
-    df_design = pd.read_excel(design, sheet_name="试验配方")
-    rng = np.random.default_rng(1)
-
-    def truth(r):
-        ll, mll, ld, hd, r1, rl, poe = [r.get(k, 0) for k in ["LL", "mLL", "LD", "HD", "R1", "RL", "POE"]]
-        return (22 + 0.03 * ll + 0.12 * mll + 0.05 * hd - 0.01 * r1, 400 + 2 * ll + 8 * mll + 2 * ld - 20 * hd - 1.0 * r1 + 1.5 * rl + 15 * poe,
-                5 + 0.02 * ll + 0.25 * mll - 0.05 * hd - 0.01 * r1 + 0.2 * poe, 15 + 0.02 * ll + 0.15 * mll + 0.06 * ld - 0.1 * hd - 0.01 * r1,
-                8 - 0.01 * ll - 0.04 * mll - 0.03 * ld + 0.4 * hd + 0.03 * r1 + 0.02 * rl)
-
+def _simulated_results(trials):
     rows = []
+    for t in trials:
+        d = t["design"]
+        w = d.whole()
+        fl, r, hd = w.get("FL", 0) / 10, w.get("R1", 0) / 10, w.get("HD", 0) / 10
+        s = 1.6 - 0.65 * fl - 0.10 * r - 0.25 * hd - 0.12 * (d.thickness - 4.5)
+        rows.append({"编号": t["code"], "实测厚度(丝)": d.thickness,
+                     "纵向拉断力(N)": round(4.0 * d.thickness * (1 - 0.10 * fl - 0.02 * r + 0.05 * hd), 2),
+                     "横向拉断力(N)": round(3.6 * d.thickness * (1 - 0.16 * fl - 0.02 * r - 0.03 * hd), 2),
+                     "透光档(0一般/1好/2很好)": 2 if s >= 1.5 else (1 if s >= 0.6 else 0)})
+    return pd.DataFrame(rows)
 
-    def add(sid, comps, reps=2):
-        t = truth(comps)
-        for _ in range(reps):
-            rows.append({"sample_id": sid, **{k: comps.get(k, 0) for k in D.COMP_COLS}, "R1_batch": "B1", "thickness_um": 50,
-                         "tensile": t[0] + rng.normal(0, 0.3), "tear": t[1] + rng.normal(0, 8), "puncture": t[2] + rng.normal(0, 0.15),
-                         "seal": t[3] + rng.normal(0, 0.3), "haze": t[4] + rng.normal(0, 0.2)})
 
-    add("S0-01", {"LL": 60, "LD": 10, "HD": 5, "R1": 25}, 3)
-    for _, r in df_design.iterrows():
-        add(r["sample_id"], {k: float(r[k]) for k in D.COMP_COLS if k in r})
-    D.save(pd.DataFrame(rows))
-    out = runner.run_stage("learn", echo=None)
-    assert out["models"] and (KB["model"] / "模型验证报告.md").exists()
-    rr = stage_experiment.record_round(1)
-    assert rr["round"] == 1
-    # 新规则：只有买得到的料才能进配方库——给设计空间里的料各登记一条正式报价
-    from polysage import pricing
+def test_experiment_loop(fake_llm, fake_sources):
+    """⑥ 首轮 → 回填 → ⑦ 校准 → ⑧ 下一轮 → ⑨ 复盘，全走 ABA。"""
+    from polysage.aba import experiments as AE
     from polysage.formulation import materials as MAT
 
-    for m in MAT.list_materials(active_only=True):
-        if m.get("price_actual") is None and m.get("price_estimate") is not None:
-            pricing.record_price(m["code"], float(m["price_estimate"]), "actual", source="测试报价")
-    out = runner.run_stage("scan", echo=None)
-    assert out["n_recommended"] >= 1 and (KB["experiment"] / "推荐配方.xlsx").exists()
-    assert db.q1("SELECT COUNT(*) c FROM formulations WHERE status='推荐'")["c"] >= 1
-    out = runner.run_stage("review", echo=None, round_no=1)
-    assert out["n_samples"] > 0 and Path(out["outputs"][0]).exists()
-    assert "轮次" in runner.status_text()
+    MAT.seed_materials()
+    for code, price in {"LL": 9670, "R1": 8250, "FL": 2500, "HD": 9300}.items():
+        MAT.add_price(code, price, "actual", source="测试实价")
+    db.execute("DELETE FROM aba_trials")
+    AE.reset_calibration()
+    try:
+        doe = runner.run_stage("doe", echo=None)
+        assert doe["n_design"] == 14
+        assert AE.import_results(_simulated_results(AE.trials()))["updated"] == 14
+        learn = runner.run_stage("learn", echo=None)
+        assert learn["n"] == 14 and learn["md_N_ref"] and learn["grade_hit"] >= 80
+        scan = runner.run_stage("scan", echo=None)
+        assert scan["n"] >= 5 and Path(scan["outputs"][0]).exists()
+        review = runner.run_stage("review", echo=None, round_no=1)
+        assert Path(review["outputs"][0]).exists()
+    finally:
+        AE.reset_calibration()
+        db.execute("DELETE FROM prices WHERE source='测试实价'")
+        db.execute("DELETE FROM aba_trials")
 
 
 def test_task_and_state_roundtrip():
     t = task.load()
-    t["product"]["thickness_um"] = 50
+    t["product"]["thickness"] = "固定 5 丝"
     task.save(t)
-    assert task.load()["product"]["thickness_um"] == 50
-    assert "50 μm" in task.brief()
+    assert task.load()["product"]["thickness"] == "固定 5 丝"
+    assert "固定 5 丝" in task.brief()
     state.set_stage("collect", status="done", n_hits=1)
     assert state.stage("collect")["n_hits"] == 1

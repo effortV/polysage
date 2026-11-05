@@ -8,27 +8,31 @@ from typing import Any
 from .. import db
 from ..config import KB
 
-# 代码, 类别, 名称, 牌号示例, MFR, 密度, 共聚单体, 是否再生, 作用, 典型用量下限, 上限, 四项影响, 风险, 是否用于配方, 假设价
-BASE_CODES = ("LL", "LD", "HD", "R1")      # 现配方在用的四种料，只有它们是预置的
+BASE_CODES = ("LL", "R1", "FL", "HD")      # 现配方在用的料（ABA：基底 LLDPE + 高压再生，B 层填充，必要时 B 层加 HDPE）
 
-# 原料库只预置现配方在用的这 4 种；其余候选料由智能体检索发现（带来源网址），不再照搬内部技术路线附录 D 的假设清单。
+# 原料库只预置现配方在用的料；其余候选料由智能体检索发现（带来源网址），不再照搬内部技术路线附录 D 的假设清单。
+# effects 用新的三项指标写：纵向拉伸、横向拉伸、透光（定量系数在 polysage/aba/rules.py）。
 SEED_MATERIALS: list[dict[str, Any]] = [
     dict(code="LL", category="主体树脂", name="现用 LLDPE（牌号待确认）", grade="待甲方提供", mfi=2.0, density=0.918, comonomer="丁烯（待确认）", is_recycled=0,
-         role="韧性骨架；现用主料，成本大头，替代对象", typical_min=0, typical_max=60, melting_point=122, vicat=100,
-         effects={"拉伸": "基准", "撕裂": "基准", "穿刺": "基准", "热封": "基准"}, risk="现用；若为特殊牌号，替代实为降规格，需以其 TDS 为筛选基准",
+         role="A、B 两层的基底主料（现配方 50 kg / 75 kg）", typical_min=30, typical_max=100, melting_point=122, vicat=100,
+         effects={"纵向拉伸": "基准", "横向拉伸": "基准", "透光": "基准"}, risk="若为特殊牌号，换料前以其 TDS 为准",
          use_flag="是（基准）", origin="现配方在用", price=12000, price_note="甲方口述价（2026-09）"),
-    dict(code="LD", category="主体树脂", name="LDPE 新料（2426H 类）", grade="2426H/2426K", mfi=2.0, density=0.922, comonomer="", is_recycled=0,
-         role="加工性、膜泡稳定、光学、热封", typical_min=5, typical_max=20, melting_point=110,
-         effects={"拉伸": "↓", "撕裂": "↓", "穿刺": "↓", "热封": "↑"}, risk="比 LLDPE 贵", use_flag="是（少量）",
-         origin="现配方在用", price=None, price_note="价格只认贸易商日报 / 实际报价"),
-    dict(code="HD", category="主体树脂", name="HDPE 膜料（5000S 类）", grade="5000S/HHMTR144", mfi=0.9, density=0.950, comonomer="", is_recycled=0,
-         role="挺度（撕裂与外观代价大，默认 ≤5%）", typical_min=0, typical_max=10, melting_point=130,
-         effects={"拉伸": "↑", "撕裂": "↓↓", "穿刺": "↓", "热封": "↓"}, risk="撕裂下降、发白", use_flag="减量/去除",
-         origin="现配方在用", price=None, price_note="价格只认贸易商日报 / 实际报价"),
-    dict(code="R1", category="再生料", name="再生高压一级透明料", grade="—", mfi=2.0, density=0.922, comonomer="", is_recycled=1,
-         role="现用；成本主力（比例上限靠阶梯实验定）", typical_min=15, typical_max=60, melting_point=112,
-         effects={"拉伸": "略降", "撕裂": "略降", "穿刺": "↓（凝胶）", "热封": "略降（杂质）"}, risk="批次波动；需进厂快检",
-         use_flag="是", origin="现配方在用", price=8000, price_note="甲方口述价（2026-09）"),
+    dict(code="R1", category="再生料", name="高压再生回料（近新料色）", grade="—", mfi=2.0, density=0.922, comonomer="", is_recycled=1,
+         role="A、B 两层基底里的再生料（现配方 25 kg / 75 kg）", typical_min=0, typical_max=60, melting_point=112,
+         effects={"纵向拉伸": "略降", "横向拉伸": "略降", "透光": "略降"}, risk="批次波动；需进厂快检",
+         use_flag="是", origin="现配方在用", price=8250, price_note="甲方口述价（2026-11，8000~8500 取中值）"),
+    dict(code="FL", category="填充母料", name="碳酸钙填充母料", grade="—", mfi=None, density=1.95, comonomer="", is_recycled=0,
+         role="只加在 B 层（芯层），一般 10~50%，主要降本手段", typical_min=0, typical_max=50,
+         effects={"纵向拉伸": "↓", "横向拉伸": "↓↓", "透光": "↓↓"}, risk="透光与拉伸下降；密度高，克重上升",
+         use_flag="是（只进 B 层）", origin="现配方在用", price=2500, price_note="甲方口述价（2026-11）"),
+    dict(code="HD", category="主体树脂", name="HDPE 膜料（低压）", grade="5000S 类", mfi=0.9, density=0.950, comonomer="", is_recycled=0,
+         role="需要挺度/硬度时加在 B 层，约 10%", typical_min=0, typical_max=15, melting_point=130,
+         effects={"纵向拉伸": "↑", "横向拉伸": "略降", "透光": "↓"}, risk="横向易劈裂、发白",
+         use_flag="是（只进 B 层）", origin="现配方在用", price=None, price_note="价格只认贸易商日报 / 实际报价"),
+    dict(code="LD", category="主体树脂", name="LDPE 新料（高压，2426H 类）", grade="2426H/2426K", mfi=2.0, density=0.922, comonomer="", is_recycled=0,
+         role="A 层提光学、稳膜泡的候选", typical_min=0, typical_max=20, melting_point=110,
+         effects={"纵向拉伸": "↓", "横向拉伸": "↓", "透光": "↑"}, risk="比 LLDPE 贵", use_flag="候选",
+         origin="原料库预置", price=None, price_note="价格只认贸易商日报 / 实际报价"),
 ]
 
 PRICE_NOTE = "甲方口述价，未见正式报价单"

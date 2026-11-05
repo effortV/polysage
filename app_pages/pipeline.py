@@ -7,7 +7,7 @@ import streamlit as st
 
 from polysage import jobs, ui
 from polysage.config import settings
-from polysage.pipeline import runner, stage_experiment, state, task
+from polysage.pipeline import state, task
 
 ui.page_header("研发流水线", "资料采集、机理分析、报告与实验闭环；出方案请用「配方推荐」。")
 
@@ -43,35 +43,18 @@ for col, (key, name) in zip(cols, state.STAGES[:6]):
 
 st.subheader("实验闭环")
 with st.container(border=True):
-    up = st.file_uploader("回灌实测数据（CSV/XLSX，按数据表模板）", type=["csv", "xlsx"], key="data_upload")
-    if up is not None:
-        from polysage.ml import dataset as D
-
-        dest = D.DATA_PATH if up.name.endswith(".csv") else D.DATA_PATH.with_suffix(".xlsx")
-        dest.write_bytes(up.getvalue())
-        if dest.suffix == ".xlsx":
-            df = pd.read_excel(dest)
-            D.save(df)
-        st.success(f"已保存到 {D.DATA_PATH}")
+    st.caption("ABA 试验的方案表下载、实测回填和预测对比在「实验与模型」页；这里可以把后面三步当流水线阶段跑。")
     r0, r1, r2, r3 = ui.hrow(4)
-    round_no = r0.number_input("轮次", 1, 20, len(state.load().get("rounds", [])) + 1)
-    if r1.button("⑦ 回灌建模", disabled=busy):
-        def _learn():
-            out = runner.run_stage("learn", echo=None)
-            stage_experiment.record_round(int(round_no))
-            return out
-        jobs.start("learn", _learn)
+    round_no = r0.number_input("轮次", 1, 20, 1)
+    if r1.button("⑦ 用实测校准", disabled=busy):
+        jobs.start_stage("learn")
         st.rerun()
-    if r2.button("⑧ 扫描推荐", disabled=busy):
+    if r2.button("⑧ 推荐下一轮", disabled=busy):
         jobs.start_stage("scan")
         st.rerun()
     if r3.button("⑨ 复盘", disabled=busy):
         jobs.start_stage("review", round_no=int(round_no))
         st.rerun()
-    rounds = state.load().get("rounds", [])
-    if rounds:
-        st.dataframe(pd.DataFrame(rounds), hide_index=True)
-        st.caption("收敛判断：" + stage_experiment.convergence_check(rounds)["reason"])
 
 
 @st.fragment(run_every="3s" if jobs.is_running() else None)
