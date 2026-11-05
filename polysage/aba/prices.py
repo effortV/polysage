@@ -104,6 +104,8 @@ def build(name: str = "current", custom_pct: float = 0.0, *, roles: dict[str, st
                     raise RuntimeError(f"{sym} 无行情")
                 ratio *= fk[-1]["close"] / l_now
                 ref.update({"contract": sym, "F": fk[-1]["close"]})
+                if abs(fk[-1]["close"] / l_now - 1) < 0.001:
+                    notes.append(f"{sym} 现在就是主力合约，和“按期货修正到今天”一样；想看远一点选次近月。")
         except Exception as e:  # noqa: BLE001
             notes.append(f"期货数据取不到（{str(e)[:60]}），这次按当前价格卡计算。")
             ratio = 1.0

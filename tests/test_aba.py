@@ -89,10 +89,15 @@ def test_optimize_per_grade(aba_prices):
 
 def test_new_material_compared_with_current(aba_prices):
     MAT.upsert_material({"code": "mLL", "name": "茂金属 LLDPE", "category": "主体树脂", "grade": "SP1520", "density": 0.918})
-    MAT.add_price("mLL", 9900, "actual", source="测试实价")
+    MAT.add_price("mLL", 9900, "actual", source="测试实价")                      # 比 LLDPE 贵：只有补强度时才可能划算
     out = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True})
     new = [ev for items in out["groups"]["加新料"].values() for ev in items]
-    assert new and all("vs_current" in ev for ev in new)                         # 每条都和现有料最优比过
+    assert all(ev.get("vs_current", -2) < -1 for ev in new)                      # 列出来的都比现有料最优省
+    MAT.add_price("mLL", 8800, "actual", source="测试实价")                      # 便宜又更强：一定该列出来
+    out = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True})
+    new = [ev for items in out["groups"]["加新料"].values() for ev in items]
+    assert new and all(ev["vs_current"] < -1 and "mLL" in ev["design"].whole() for ev in new)
+    assert all(ev["cost_m2"] == pytest.approx(ev["cost"] * ev["gsm"] / 1e6, rel=3e-3) for ev in new)
 
 
 def test_price_scenarios_custom(aba_prices):

@@ -63,12 +63,14 @@ def _result_tables(out: dict) -> None:
         sub = [r for r in rows if r["分组"] == gname]
         st.markdown(f"##### {gname}")
         if not sub:
-            st.info("没有满足要求的方案：放宽拉断力要求、加大厚度上限，或降低透光要求再试。")
+            st.info("加/换新料都不比只用现有料更省。" if gname == "加新料"
+                    else "没有满足要求的方案：放宽拉断力要求、加大厚度上限，或降低透光要求再试。")
             continue
         show = pd.DataFrame([{k: v for k, v in r.items() if k not in ("分组", "依据", "_ev")
                               and not (k == "比现有料最优" and gname == "现有料")} for r in sub])
         st.dataframe(show, hide_index=True, **ui.WIDE,
                      column_config={"元/吨": st.column_config.NumberColumn(format="%.0f"),
+                                    "元/m²(参考)": st.column_config.NumberColumn(format="%.3f"),
                                     "纵向拉断力": st.column_config.NumberColumn(format="%.2f×"),
                                     "横向拉断力": st.column_config.NumberColumn(format="%.2f×")})
         with ui.expander(f"{gname}：每个方案的依据"):

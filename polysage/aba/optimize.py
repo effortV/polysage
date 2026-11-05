@@ -246,10 +246,14 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
             for ev in items:
                 if best and best.get("cost") is not None and ev.get("cost") is not None:
                     ev["vs_current"] = round(ev["cost"] - best["cost"], 1)
-        better = [ev for items in groups_out["加新料"].values() for ev in items if (ev.get("vs_current") or 0) < -1]
+            # 只留真比现有料最优省的：同价的替身（如同一个 7042 换个代码）没有意义
+            groups_out["加新料"][g] = [ev for ev in items if ev.get("vs_current") is None or ev["vs_current"] < -1]
+        better = [ev for items in groups_out["加新料"].values() for ev in items]
         if not better:
             notes.append("按现在的价格和系数，加/换新料都没有比只用现有料更省：新料的价值主要在提性能，降本还得靠 B 层填充和厚度。")
-    notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度；克重一栏可以看出每平方米用料的变化。")
+    notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度。"
+                 "填充多、厚度大的方案每吨便宜但每平方米用料多——“元/m²(参考)”一栏给出同一张膜的料钱，"
+                 "客户按面积买或厚度有规格时请把厚度固定再算。")
     return {"query": asdict(q), "scenario": {k: scen[k] for k in ("name", "label", "ratio", "ref")}, "ref": ref_eval,
             "groups": groups_out, "notes": notes, "n_evaluated": n_eval}
 
@@ -275,6 +279,7 @@ def rows(out: dict[str, Any]) -> list[dict[str, Any]]:
                 table.append({"分组": gname, "透光要求": f"≥{R.GRADE_LABEL[g]}", "名次": i, "配方": ev["text"],
                               "元/吨": ev["cost"], "较现配方": saving_text(ev.get("saving_pct")),
                               "比现有料最优": ev.get("vs_current"), "克重 g/m²": ev["gsm"],
+                              "元/m²(参考)": ev.get("cost_m2"),
                               "纵向拉断力": ev["md_rel"], "横向拉断力": ev["td_rel"], "透光": ev["grade_label"],
                               "把握": ev["confidence"], "依据": "；".join(ev.get("drivers") or []), "_ev": ev})
     return table
@@ -293,12 +298,14 @@ def to_text(out: dict[str, Any], max_per_grade: int = 2) -> str:
         lines.append(f"## {gname}")
         for g, items in per.items():
             if not items:
-                lines.append(f"- 透光 ≥{R.GRADE_LABEL[g]}：在约束内找不到方案")
+                lines.append(f"- 透光 ≥{R.GRADE_LABEL[g]}：" + ("加/换新料不比只用现有料更省" if gname == "加新料"
+                                                                 else "在约束内找不到方案"))
                 continue
             for i, ev in enumerate(items[:max_per_grade], 1):
                 lines.append(f"- 透光 ≥{R.GRADE_LABEL[g]} #{i}：{ev['text']}｜{ev['cost']:.0f} 元/吨"
                              f"（{saving_text(ev.get('saving_pct'))}）｜纵 {_rel(ev['md_rel'])} 横 {_rel(ev['td_rel'])}"
-                             f"｜预测透光 {ev['grade_label']}｜克重 {ev['gsm']:.0f}｜把握 {ev['confidence']}"
+                             f"｜预测透光 {ev['grade_label']}｜克重 {ev['gsm']:.0f}（每平方米料钱 {ev.get('cost_m2') or 0:.3f} 元）"
+                             f"｜把握 {ev['confidence']}"
                              + (f"｜比现有料最优 {ev['vs_current']:+.0f} 元/吨" if ev.get("vs_current") is not None else ""))
                 for dline in (ev.get("drivers") or [])[:3]:
                     lines.append(f"    · {dline}")

@@ -217,6 +217,7 @@ class Ctx:
 
     def evaluate(self, d: Design, ref: Design) -> dict[str, Any]:
         cost = self.cost(d)
+        gsm = self.gsm(d)
         return {"design": d, "text": d.text(), "cost": None if cost is None else round(cost, 1),
-                "gsm": round(self.gsm(d), 1), "issues": self.check(d), "missing": self.missing_prices(d),
-                **self.predict(d, ref)}
+                "gsm": round(gsm, 1), "cost_m2": None if cost is None else round(cost * gsm / 1e6, 4),   # 元/吨 × g/m² → 元/m²
+                "issues": self.check(d), "missing": self.missing_prices(d), **self.predict(d, ref)}
