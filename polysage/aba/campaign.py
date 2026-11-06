@@ -37,7 +37,7 @@ def clean_prices() -> list[str]:
         if not (lo <= float(r["price"]) <= hi):
             db.execute("DELETE FROM prices WHERE id=?", (r["id"],))
             removed.append(f"{r['material_code']} {r['name']}：{r['price']:.0f} 元/吨（{r['category']}常识区间 {lo}~{hi}）")
-    return removed
+    return list(dict.fromkeys(removed))
 
 
 def _flat(v: Any) -> str:
@@ -75,6 +75,9 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
 
     trials = E.trials(round_no)
     meta = E.round_meta(round_no)
+    market = market if market is not None else meta.get("market")          # 这一轮跑的时候记下的行情 / 新料结果
+    discover = discover if discover is not None else meta.get("discover")
+    cleaned = cleaned if cleaned is not None else meta.get("cleaned")
     scens = _scenarios()
     runs = {}
     for s in scens:
@@ -188,7 +191,7 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
             if discover.get(k):
                 W.para(doc, {"added": "**这次新入库**：", "better": "**比现有料更省的**：", "notes": "**说明**："}[k]
                        + _flat(discover[k])[:900])
-    found = [m for m in list_materials(active_only=False) if (m.get("origin") or "") == "智能体发现"]
+    found = [m for m in list_materials(active_only=False) if (m.get("origin") or "").startswith("智能体")]
     in_best = {k for ev in newer for k in ev["design"].whole()}
     if found:
         W.add_table(doc, [{"代码": m["code"], "名称": m["name"], "类别": m.get("category"),
@@ -246,6 +249,11 @@ def run(n_total: int = 50, *, refresh_market: bool = True, find_new: bool = True
         except Exception as e:  # noqa: BLE001
             steps["新料"] = f"失败：{e}"
     plan = E.plan_round(n_total, t_ref=t_ref, scenario=scenario)
+    from .. import kb
+
+    meta_path = KB["experiment"] / f"round_{plan['round']}_meta.yaml"
+    kb.write_yaml(meta_path, {**E.round_meta(plan["round"]), "market": market, "discover": discover, "cleaned": cleaned,
+                              "steps": steps})
     report = report_docx(plan["round"], market=market, discover=discover, cleaned=cleaned, t_ref=t_ref)
     return {"round": plan["round"], "n": len(plan["trials"]), "plan_docx": plan["docx"], "plan_xlsx": plan["xlsx"],
             "report_docx": str(report), "counts": plan["meta"]["counts"], "cleaned": cleaned, "steps": steps,

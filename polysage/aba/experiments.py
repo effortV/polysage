@@ -216,16 +216,19 @@ def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str
                 got += 1
     if n_new:
         new = O.run({**q, "use_new": True})
-        cand = sorted({ev["design"].key(): ev for items_ in (new["groups"].get("加新料") or {}).values() for ev in items_}.values(),
-                      key=lambda e: e["cost"] or 1e9)
-        k_new = 0
-        for ev in cand:
-            if k_new >= n_new:
-                break
-            mats = sorted(set(ev["design"].whole()) - O.CURRENT_CODES)
-            names = "、".join(f"{c} {ctx.mats.get(c, {}).get('name', '')}".strip() for c in mats)
-            if add(ev["design"], f"新料：{names}（{ev['cost']:.0f} 元/吨，先确认料源与外观）"):
-                k_new += 1
+        per_new = {g: sorted(items_, key=lambda e: e["cost"] or 1e9) for g, items_ in (new["groups"].get("加新料") or {}).items()}
+        k_new, rank = 0, 0
+        while k_new < n_new and any(len(v) > rank for v in per_new.values()):
+            for g in sorted(per_new, reverse=True):                 # 每档轮流挑：先很好、再好、再一般
+                if k_new >= n_new or rank >= len(per_new[g]):
+                    continue
+                ev = per_new[g][rank]
+                mats = sorted(set(ev["design"].whole()) - O.CURRENT_CODES)
+                names = "、".join(f"{c} {ctx.mats.get(c, {}).get('name', '')}".strip() for c in mats)
+                pct = (ref_cost - ev["cost"]) / ref_cost * 100 if ref_cost else 0.0
+                if add(ev["design"], f"新料：透光≥{R.GRADE_LABEL[g]}，用 {names}（{ev['cost']:.0f} 元/吨，省 {pct:.1f}%；先确认料源与外观）"):
+                    k_new += 1
+            rank += 1
     # 建模组：D-最优补满
     pool, F = [], []
     for r_a in SPACE["r_a"]:

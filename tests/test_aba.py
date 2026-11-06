@@ -282,3 +282,14 @@ def test_campaign_clean_and_report(aba_prices, monkeypatch):
     assert "一、结论" in text and "每档最省" in text and "按吨和按面积" in text and "第 1 轮" in text
     assert len(doc.tables) >= 4
     assert C.latest_files()["运行报告"].endswith(".docx")
+
+
+def test_plan_round_new_materials_span_grades(aba_prices):
+    MAT.upsert_material({"code": "RL", "name": "再生线性一级料（工业膜回料）", "category": "再生料", "is_recycled": 1,
+                         "origin": "智能体发现 再生 PE 颗粒"})
+    MAT.add_price("RL", 5150, "actual", source="测试实价", price_date="2026-11-05")
+    r = E.plan_round(30, t_ref=4.5, n_new=4)
+    new = [t for t in r["trials"] if t["purpose"].startswith("新料")]
+    assert len(new) == 4 and all("RL" in t["design"].whole() for t in new)
+    grades = {t["purpose"].split("，")[0] for t in new}
+    assert len(grades) >= 2, grades                                                # 不全挤在一个透光档
