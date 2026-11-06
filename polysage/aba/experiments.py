@@ -226,7 +226,10 @@ def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str
                 mats = sorted(set(ev["design"].whole()) - O.CURRENT_CODES)
                 names = "、".join(f"{c} {ctx.mats.get(c, {}).get('name', '')}".strip() for c in mats)
                 pct = (ref_cost - ev["cost"]) / ref_cost * 100 if ref_cost else 0.0
-                if add(ev["design"], f"新料：透光≥{R.GRADE_LABEL[g]}，用 {names}（{ev['cost']:.0f} 元/吨，省 {pct:.1f}%；先确认料源与外观）"):
+                vs = ev.get("vs_current")
+                money = (f"省 {pct:.1f}%" if pct >= 0 else f"比现配方贵 {-pct:.1f}%") + (
+                    f"，比只用现有料的同档最省便宜 {-vs:.0f} 元" if vs is not None and vs < 0 else "")
+                if add(ev["design"], f"新料：透光≥{R.GRADE_LABEL[g]}，用 {names}（{ev['cost']:.0f} 元/吨，{money}；先确认料源与外观）"):
                     k_new += 1
             rank += 1
     # 建模组：D-最优补满

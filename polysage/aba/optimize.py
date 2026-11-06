@@ -68,6 +68,8 @@ def _merge(*parts: dict[str, float]) -> dict[str, float]:
 ALT_MAX_AGE_DAYS = 30          # 新料的价格超过一个月没更新，不拿来和现有料比（旧价配新价会算出假的“省”）
 ALT_MIN_RATIO = 0.8            # PE 新料价格低于同类现有料八成：多半抽错或不是同一种东西，先询价
 SAME_FAMILY = {"lldpe": BASE_RESIN, "lldpe_c6": BASE_RESIN, "mlldpe": BASE_RESIN, "ldpe": "LD", "hdpe": HDPE_CODE, "mdpe": HDPE_CODE}
+SLOT_BASE = {**SAME_FAMILY, "recycled_ld": BASE_RECYCLED, "recycled_ll": BASE_RECYCLED, "pcr": BASE_RECYCLED,
+             "filler": FILLER_CODE, "clear_filler": FILLER_CODE, "talc": FILLER_CODE}
 
 
 def alt_problem(ctx: Ctx, code: str, eff: dict[str, dict[str, Any]] | None = None) -> str:
@@ -103,7 +105,15 @@ def _usable(ctx: Ctx, exclude: set[str], skipped: dict[str, str] | None = None) 
     for code, m in ctx.mats.items():
         if code in exclude or not m.get("active", 1) or str(m.get("use_flag") or "").startswith("否"):
             continue
-        if code not in ctx.prices or not procurement.is_buyable(code):
+        if code not in ctx.prices:
+            continue
+        if not procurement.is_buyable(code):
+            # 比同位置的现有料便宜、但只有网查参考价的：值得询个价——单独列出来，别悄悄丢掉
+            base = SLOT_BASE.get(ctx.role.get(code, ""))
+            if skipped is not None and base and base != code and ctx.prices.get(base) and ctx.prices[code] < ctx.prices[base]:
+                e = eff.get(code) or {}
+                skipped[code] = (f"线索：{ctx.prices[code]:.0f} 元/吨（{str(e.get('date') or '')[:10]} 网查参考），"
+                                 f"比 {base} 便宜 {(1 - ctx.prices[code] / ctx.prices[base]) * 100:.0f}%，没有能下单的报价")
             continue
         why = alt_problem(ctx, code, eff)
         if why:
@@ -301,9 +311,16 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
                 notes.append(f"透光≥{R.GRADE_LABEL[g]}：按现有实验数据还没有八成把握做到；点估计最省的是 {ev['text']}，"
                              f"{ev['cost']:.0f} 元/吨（{saving_text(ev.get('saving_pct'))}）——建议试一组确认。")
     if q.use_new and skipped:
-        notes.append("这些料没进“加新料”（要用先查价/询价）：" + "；".join(f"{c} {ctx.mats.get(c, {}).get('name', '')}：{w}"
-                                                              for c, w in list(skipped.items())[:8])
-                     + (f" 等 {len(skipped)} 种" if len(skipped) > 8 else "") + "。")
+        leads = {c: w for c, w in skipped.items() if w.startswith("线索")}
+        stale = {c: w for c, w in skipped.items() if not w.startswith("线索")}
+        if leads:
+            top = sorted(leads, key=lambda c: ctx.prices.get(c, 1e9))[:6]
+            notes.append("比现有料便宜、询个价就能进方案的料：" + "；".join(
+                f"{c} {ctx.mats.get(c, {}).get('name', '')}（{leads[c][3:]}）" for c in top)
+                + (f" 等 {len(leads)} 种" if len(leads) > 6 else "") + "。拿到正式报价后在对话里告诉配方助手，或在「价格与供应商」登记。")
+        if stale:
+            notes.append("这些料没进“加新料”（价格太旧或明显不对，先查价/询价）：" + "；".join(
+                f"{c} {ctx.mats.get(c, {}).get('name', '')}：{w}" for c, w in list(stale.items())[:6]) + "。")
     notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度。"
                  "填充多、厚度大的方案每吨便宜但每平方米用料多——“元/m²(参考)”一栏给出同一张膜的料钱，"
                  "客户按面积买或厚度有规格时请把厚度固定再算。")

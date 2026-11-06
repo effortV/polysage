@@ -323,3 +323,15 @@ def test_alternatives_need_fresh_sane_prices(aba_prices):
     assert "LLX" in note and "天前" in note and "LDX" in note and "低太多" in note
     db.execute("DELETE FROM prices WHERE material_code IN ('LLX', 'LDX')")
     db.execute("DELETE FROM materials WHERE code IN ('LLX', 'LDX')")
+
+
+def test_cheap_unbuyable_material_listed_as_lead(aba_prices):
+    import datetime as _dt
+
+    MAT.upsert_material({"code": "RLX", "name": "再生线性一级料（测试）", "category": "再生料", "is_recycled": 1})
+    MAT.add_price("RLX", 5200, "estimate", source="网查参考价（测试）", price_date=_dt.date.today().isoformat())
+    out = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True})
+    note = " ".join(out["notes"])
+    assert "询个价就能进方案" in note and "RLX" in note and "比 R1 便宜" in note
+    db.execute("DELETE FROM prices WHERE material_code='RLX'")
+    db.execute("DELETE FROM materials WHERE code='RLX'")
