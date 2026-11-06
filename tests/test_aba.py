@@ -295,6 +295,9 @@ def test_campaign_clean_and_report(aba_prices, monkeypatch):
     assert "厚度不变（4.5 丝）时每档最省" in text and "goodsfu" not in text
     assert len(doc.tables) >= 4
     assert C.latest_files()["运行报告"].endswith(".docx")
+    rep = C.load_report(r["round"])                                                     # 网页显示同一份内容
+    assert rep and rep["blocks"][0]["text"].startswith("一、结论") and any(b["t"] == "table" for b in rep["blocks"])
+    assert set(C.round_files(r["round"])) >= {"plan_docx", "plan_xlsx", "report_docx"}
 
 
 def test_plan_round_new_materials_span_grades(aba_prices):

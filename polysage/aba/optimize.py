@@ -311,7 +311,7 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
     if not q.use_new:
         groups_out.pop("加新料", None)
     elif not any(groups_out.get("加新料", {}).values()):
-        notes.append("库里除了现有的 4 种料，还没有买得到、有价的新料可用：先在「原料与价格 › 智能体找新料」或对话里让它去找。")
+        notes.append("库里除了现有的 4 种料，还没有买得到、有价的新料可用：先在「原料与配方库 › 原料库」的“智能体找新料”或对话里让它去找。")
     else:
         # 新料方案要和“只用现有料”的最优比：贵了就直说不划算
         for g, items in groups_out["加新料"].items():

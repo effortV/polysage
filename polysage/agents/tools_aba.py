@@ -131,17 +131,19 @@ def aba_experiment(action: str, n: int = 50, md_req: float = 1.0, td_req: float 
             return f"后台正在跑「{JOB_LABELS.get(running['name'], running['name'])}」，等它跑完再开始。", []
         ok = jobs.start("aba_round", lambda: campaign.run(n, t_ref=float(t_ref)))
         return ("已在后台开始跑一整轮：更新行情 → 找新料 → 分档寻优 → 出 %d 组试验方案和两份 Word，约 5~15 分钟；"
-                "跑完在「实验与校准」页下载，或再问我进度。" % n if ok else "没能启动后台任务，请稍后再试。"), []
+                "跑完在网页「实验与校准 › 各轮结果」看运行报告、每一组和下载 Word，或再问我进度。" % n if ok else "没能启动后台任务，请稍后再试。"), []
     if action == "first":
         r = E.plan_round(n, t_ref=float(t_ref))
         lines = [f"第 {r['round']} 轮试验方案 {len(r['trials'])} 组（" + "，".join(f"{k} {v}" for k, v in r["meta"]["counts"].items())
-                 + f"）。Word：06_实验数据/{Path(r['docx']).name}；表格：06_实验数据/{Path(r['xlsx']).name}"]
+                 + f"）。Word：06_实验数据/{Path(r['docx']).name}；表格：06_实验数据/{Path(r['xlsx']).name}；"
+                 "网页「实验与校准 › 各轮结果」也能看和下载"]
         lines += [f"{t['code']}｜{t['purpose']}｜{t['design'].text()}｜预计 {t['predicted'].get('cost')} 元/吨，"
                   f"透光 {t['predicted'].get('grade_label')}" for t in r["trials"]]
         return chr(10).join(lines), []
     if action == "next":
         r = E.next_round({"md_req": _req(md_req), "td_req": _req(td_req), "t_ref": float(t_ref)})
-        lines = [f"第 {r['round']} 轮推荐 {len(r['trials'])} 组。Word：06_实验数据/{Path(r['docx']).name}"]
+        lines = [f"第 {r['round']} 轮推荐 {len(r['trials'])} 组。Word：06_实验数据/{Path(r['docx']).name}；"
+                 "网页「实验与校准 › 各轮结果」也能看和下载"]
         lines += [f"{t['code']}｜{t['purpose']}｜{t['design'].text()}｜预计 {t['predicted'].get('cost')} 元/吨，透光 {t['predicted'].get('grade_label')}"
                   for t in r["trials"]]
         return "\n".join(lines), []
