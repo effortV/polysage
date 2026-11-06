@@ -193,3 +193,18 @@ def test_market_feed_pages(monkeypatch, home):
     assert pages[0][1].startswith("今日中国新塑料行情")
     monkeypatch.setattr(B, "get_bytes", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("断网")))
     assert D.market_feed_pages(today) == []                                             # 读不到不报错
+
+
+def test_web_market_film_grades_only(home):
+    """区域行情表里同一类有膜料、注塑、拉丝……只拿膜料的价。"""
+    import datetime as _dt
+
+    MAT.seed_materials()
+    d0 = _dt.date.today().isoformat()
+    rows = [{"family": "HDPE", "producer": "", "grade": g, "warehouse": "华东", "delivery": "市场价", "price": p, "tax_included": True,
+             "note": "市场价", "freight": 0, "landed": p, "trader": "区域行情日报", "date": d0, "url": "https://x.test/f"}
+            for g, p in (("膜料", 9360), ("注塑", 9760), ("拉丝", 10350))]
+    D.save_rows(rows, channel="网查", credibility=3)
+    p = D.web_market_pick("HDPE")
+    assert p["median"] == 9360 and p["n"] == 1
+    db.execute("DELETE FROM supplier_quotes WHERE family='HDPE' AND channel='网查'")

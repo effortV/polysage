@@ -295,7 +295,8 @@ def picks_text(quote_date: str | None = None) -> str:
 WEB_PROMPT = (
     "下面是一个塑料行情/报价网页的正文。请把其中【{family_cn}】（关键词：{keys}）的贸易商/市场报价拆成结构化行。输出 JSON："
     "{{\"quotes\": [{{\"family\": \"LLDPE|LDPE|HDPE|mLLDPE|其他\", \"producer\": \"生产厂家（浙石化/宝来/裕龙/镇海/大庆/独山子/泉化/万华/乐天/华泰/中沙/扬子/茂名…）\", "
-    "\"grade\": \"牌号（7042/7047/2426H/6098/TR144/5110…）\", \"warehouse\": \"仓库地/市场（杭州/上海/宁波/太仓/华东…，没有留空）\", "
+    "\"grade\": \"牌号（7042/7047/2426H/6098/TR144/5110…）；没有牌号、只写了用途（膜料/薄膜/中空/注塑/拉丝/管材）就写用途\", "
+    "\"warehouse\": \"仓库地/市场（杭州/上海/宁波/太仓/华东…，没有留空）\", "
     "\"delivery\": \"货物状态（现货/在途/计划/期货…，没有留空）\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
     "\"seller\": \"报价方：贸易商名或市场名（如 生意社华东/塑料在线-某某塑化），没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写就留空\", "
     "\"kind\": \"市场价|贸易商|厂家|基准价|评述\"}}]}}。"
@@ -522,6 +523,9 @@ def short_source(name: str) -> str:
     return s or str(name or "")
 
 
+NON_FILM = re.compile(r"注塑|拉丝|中空|管材|电缆|涂覆|滚塑|吹塑|纤维")   # 我们是吹膜：别的用途的料价格不同（HDPE 拉丝比膜料贵 1000）
+
+
 def _is_east(r: dict[str, Any]) -> bool:
     wh = r.get("warehouse") or ""
     return "华东" in wh or region_rank(wh) <= 2
@@ -537,7 +541,7 @@ def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | 
     """某类树脂近 days 天网查行情：去重 → 分层 → 到厂价中位数。返回 {median, n, date, low, high, tier, who, others}。"""
     rows, seen_copy, seen_src = [], set(), set()
     for r in sorted(web_rows(fam, days=days, top=500), key=lambda x: str(x["quote_date"]), reverse=True):   # 新的在前
-        if not 5000 <= float(r["landed_price"] or 0) <= 30000:
+        if not 5000 <= float(r["landed_price"] or 0) <= 30000 or NON_FILM.search(r.get("grade") or ""):
             continue
         copy_key = (r.get("producer") or "", (r.get("grade") or "").strip(), round(float(r["price"] or 0)), str(r["quote_date"])[:10])
         src_key = (short_source(r.get("trader") or ""), r.get("warehouse") or "", r.get("producer") or "", (r.get("grade") or "").strip())
@@ -559,7 +563,7 @@ def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | 
     ids = {r["id"] for r in use}
     others = sorted(float(r["landed_price"]) for r in rows if r["id"] not in ids)
     return {"median": med, "n": len(use), "date": max(str(r["quote_date"]) for r in use)[:10], "low": vals[0], "high": vals[-1],
-            "tier": tier, "who": "、".join(dict.fromkeys(short_source(r.get("trader") or "")[:12] for r in use))[:60],
+            "tier": tier, "who": "、".join(dict.fromkeys(short_source(r.get("trader") or "")[:16] for r in use))[:60],
             "others": (others[0], others[-1], len(others)) if others else None}
 
 
