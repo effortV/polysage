@@ -289,8 +289,7 @@ def quotes(code: str | None = None, *, include_untrusted: bool = False) -> list[
 
 def compare(code: str, *, only_producers: bool = False) -> list[dict[str, Any]]:
     """该材料的报价与现价比较（实价优先，否则估计价）。"""
-    prices = MAT.current_prices().get(code, {})
-    current = prices.get("actual") if prices.get("actual") is not None else prices.get("estimate")
+    current = MAT.effective_price(code)
     rows = []
     for q in quotes(code):
         if only_producers and q["kind"] not in ("生产商", "回收厂"):

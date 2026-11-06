@@ -125,11 +125,71 @@ def test_web_market_updates_price_card_when_daily_is_stale(home):
                                      ("扬子", "上海", 12900, "某贸易"), ("茂名", "广州", 12000, "华南某"))]
     DQ.save_rows(rows, channel="网查", credibility=3)
     out = DQ.apply_web_market(["LDPE"])
-    assert out and out[0]["median"] == 12900 and out[0]["n"] == 3                       # 只取华东三条的中位
+    # 只取华东的市场价 / 贸易商报价：万华自己的挂牌价（生意社转的厂家价）不算，华南的也不算
+    assert out and out[0]["median"] == 12850 and out[0]["n"] == 2 and out[0]["tier"] == "华东市场价"
+    assert out[0]["others"] == (12000, 13015, 2)
     eff = MAT.effective_prices()["LD"]
-    assert eff["price"] == 12900 and eff["why"].startswith("网查价")
-    assert current_price_map()["LD"] == 12900
+    assert eff["price"] == 12850 and eff["why"].startswith("网查价") and "未计入" in eff["source"]
+    assert current_price_map()["LD"] == 12850
     MAT.add_price("LD", 12500, "actual", source="新日报", price_date=today)             # 新日报来了就用日报
     assert MAT.effective_prices()["LD"]["price"] == 12500 and current_price_map()["LD"] == 12500
     db.execute("DELETE FROM prices WHERE material_code='LD' AND source IN ('贸易商日报（旧）', '新日报')")
     db.execute("DELETE FROM prices WHERE material_code='LD' AND source LIKE '网查行情中位%'")
+
+
+def test_quote_kinds_and_tiers(home):
+    """网查行情分层：华东市场价优先；厂家挂牌价、期货公司评述只在没有别的时候用；同一来源连着几天只算最新一条。"""
+    import datetime as _dt
+
+    MAT.seed_materials()
+    d0 = _dt.date.today().isoformat()
+    d1 = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+
+    def row(price, wh, trader, kind, producer="", grade="", date=d0):
+        return {"family": "HDPE", "producer": producer, "grade": grade, "warehouse": wh, "delivery": "市场价", "price": price,
+                "tax_included": True, "note": kind, "freight": 0, "landed": price, "trader": trader, "date": date, "url": "https://x.test/" + trader}
+
+    D.save_rows([row(11000, "华东", "生意社(toutiao.toocle.com)", "厂家", "万华", "7000F"),
+                 row(10421, "", "光大期货(goodsfu.10jqka.com.cn)", "评述")], channel="网查", credibility=3)
+    p = D.web_market_pick("HDPE")
+    assert p["tier"].startswith("厂家") and p["n"] == 2                                  # 只有这两种
+    before = MAT.effective_prices().get("HD")
+    out = D.apply_web_market(["HDPE"])
+    assert out and out[0]["applied"] is False and MAT.effective_prices().get("HD") == before   # 挂牌价/评述不写价格卡
+    D.save_rows([row(9360, "华东", "区域行情日报", "市场价"), row(9300, "华东", "区域行情日报", "市场价", date=d1),
+                 row(9180, "华北", "区域行情日报", "市场价")], channel="网查", credibility=3)
+    p = D.web_market_pick("HDPE")
+    assert p["tier"] == "华东市场价" and p["n"] == 1 and p["median"] == 9360               # 同一来源前一天的那条不重复算
+    assert p["others"][2] == 3 and p["who"] == "区域行情日报"
+    assert D.quote_kind({"trader": "光大期货(goodsfu.10jqka.com.cn)"}) == "评述"
+    assert D.quote_kind({"trader": "生意社(toutiao.toocle.com)", "producer": "万华"}) == "厂家"
+    assert D.quote_kind({"trader": "生意社基准价(goodsfu.10jqka.com.cn)"}) == "基准价"
+    assert D.quote_kind({"basis": "含税(H) 贸易商", "trader": "宁波某塑化"}) == "贸易商"
+    assert D.short_source("光大期货(goodsfu.10jqka.com.cn)") == "光大期货" and D.short_source("某塑化(有限公司)") == "某塑化(有限公司)"
+    db.execute("DELETE FROM supplier_quotes WHERE family='HDPE' AND channel='网查'")
+
+
+def test_market_feed_pages(monkeypatch, home):
+    """区域行情日报：读 RSS，只要标题里带日期、近一周的那篇。"""
+    import datetime as _dt
+
+    import polysage.sources.base as B
+    import polysage.sources.fetch as F
+
+    today = _dt.date.today()
+    new, old = today - _dt.timedelta(days=2), today - _dt.timedelta(days=30)
+
+    def title(d):
+        return f"今日中国新塑料行情：{d.year}年{d.month:02d}月{d.day:02d}日主要区域报价平稳"
+
+    rss = (f"<rss><channel><item><title>{title(new)}</title><link>https://feed.test/a</link></item>"
+           f"<item><title>别的新闻</title><link>https://feed.test/x</link></item>"
+           f"<item><title>{title(old)}</title><link>https://feed.test/b</link></item></channel></rss>")
+    monkeypatch.setattr(D, "MARKET_FEEDS", [("https://feed.test/rss", "新塑料行情")])
+    monkeypatch.setattr(B, "get_bytes", lambda url, *a, **kw: ("application/rss+xml; charset=utf-8", rss.encode("utf-8")))
+    monkeypatch.setattr(F, "fetch_url", lambda url: {"text": "华东 PE · LLDPE 膜料 9,630 元/吨｜含税参考价 " * 20})
+    pages = D.market_feed_pages(today)
+    assert [(u, d) for u, _, d in pages] == [("https://feed.test/a", new.isoformat())]
+    assert pages[0][1].startswith("今日中国新塑料行情")
+    monkeypatch.setattr(B, "get_bytes", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("断网")))
+    assert D.market_feed_pages(today) == []                                             # 读不到不报错

@@ -49,21 +49,24 @@ def _market_job() -> dict[str, Any]:
 
     summary: dict[str, Any] = {"at": time.strftime("%Y-%m-%d %H:%M")}
     try:
-        fc = forecast.run()
-        summary["forecast"] = {fam: f"{r.get('current') or '-'} → 1 个月 {r.get('price_1m') or '-'}（{r.get('direction') or ''}）"
-                               for fam, r in (fc or {}).items()}
-    except Exception as e:  # noqa: BLE001
-        summary["forecast_error"] = str(e)[:120]
-    try:
         web = daily_quotes.web_market_quotes(["LLDPE", "LDPE", "HDPE"], depth="标准")
-        summary["web"] = {fam: f"{v.get('rows', 0)} 条" + (f"，最低到厂 {v['best']['landed']:.0f}" if v.get("best") else "")
-                          for fam, v in (web or {}).items()}
+        summary["web"] = {fam: f"{v.get('rows', 0)} 条" for fam, v in (web or {}).items()}
         applied = daily_quotes.apply_web_market(["LLDPE", "LDPE", "HDPE"])
         if applied:
-            summary["price_card"] = {a["family"]: f"按网查中位 {a['median']:.0f}（{a['n']} 条，{a['low']:.0f}~{a['high']:.0f}，{a['date']}）"
+            summary["price_card"] = {a["family"]: (f"{a['median']:.0f}（{a['tier']} {a['n']} 条，{a['low']:.0f}~{a['high']:.0f}，{a['date']}）"
+                                                   + (f"，其他口径 {a['others'][0]:.0f}~{a['others'][1]:.0f} 未计入" if a.get("others") else "")
+                                                   if a.get("applied") else
+                                                   f"没写（只有厂家挂牌价/机构评述 {a['low']:.0f}~{a['high']:.0f}，通常高于成交价）")
                                      for a in applied}
     except Exception as e:  # noqa: BLE001
         summary["web_error"] = str(e)[:120]
+    try:
+        fc = forecast.run()                                       # 放在价格卡更新之后：预判的“现价”用新的
+        summary["forecast"] = {fam: (f"{r['current']:.0f}" if r.get("current") else "-")
+                               + f" → 1 个月 {r.get('price_1m') or '-'}（{r.get('direction') or ''}）"
+                               for fam, r in (fc or {}).items()}
+    except Exception as e:  # noqa: BLE001
+        summary["forecast_error"] = str(e)[:120]
     try:
         mat = daily_quotes.web_material_quotes(["R1", "FL", "RL"], depth="快", pages_per_query=2)
         daily_quotes.apply_web_estimates(["RL"])          # 没有实价的辅料：网查最低到厂价写成估计价（R1、FL 有甲方实价，不动）
@@ -108,7 +111,8 @@ def start_research(scope: str = "新材料"):
 @tool("refresh_market", "在后台更新行情（约 5~10 分钟）：拉 LLDPE 期货并做价格预判、网查 LLDPE/LDPE/HDPE 同类报价、网查再生料和填充料报价。"
       "用户问“现在多少钱 / 最新价格 / 行情怎么样”且价格卡已经旧了时用；等结果的同时，可以先用 aba_prices 给按期货修正的估算。", {})
 def refresh_market():
-    return _start("market_refresh", _market_job) + "大约 5~10 分钟。贸易商日报才是正式价，网查结果只作对照；进度用 background_status 查。", []
+    return _start("market_refresh", _market_job) + ("大约 5~10 分钟。贸易商日报才是正式价；日报超过 3 周没更新时，价格卡按网查的华东市场价"
+                                                     "中位数计（厂家挂牌价、机构评述不算）。进度用 background_status 查。"), []
 
 
 @tool("background_status", "看后台任务：正在跑什么、跑了多久，以及最近几次找新材料 / 文献调研 / 更新行情的结果摘要。", {})

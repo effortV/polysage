@@ -231,8 +231,7 @@ def picks(quote_date: str | None = None, top: int = 3) -> dict[str, dict[str, An
         best = fr[0]
         prev_min = min((p["landed_price"] for p in prev_rows if p.get("family") == fam and p["landed_price"]), default=None)
         codes = FAMILY_CODES.get(fam) or []
-        cur = MAT.current_prices().get(codes[0], {}) if codes else {}
-        current = cur.get("actual") if cur.get("actual") is not None else cur.get("estimate")
+        current = MAT.effective_price(codes[0]) if codes else None
         out[fam] = {"date": day, "best": best, "top": fr[:top], "prev_min": prev_min,
                     "change": (best["landed_price"] - prev_min) if prev_min else None,
                     "current_card": current, "codes": codes}
@@ -298,10 +297,15 @@ WEB_PROMPT = (
     "{{\"quotes\": [{{\"family\": \"LLDPE|LDPE|HDPE|mLLDPE|其他\", \"producer\": \"生产厂家（浙石化/宝来/裕龙/镇海/大庆/独山子/泉化/万华/乐天/华泰/中沙/扬子/茂名…）\", "
     "\"grade\": \"牌号（7042/7047/2426H/6098/TR144/5110…）\", \"warehouse\": \"仓库地/市场（杭州/上海/宁波/太仓/华东…，没有留空）\", "
     "\"delivery\": \"货物状态（现货/在途/计划/期货…，没有留空）\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
-    "\"seller\": \"报价方：贸易商名或市场名（如 生意社华东/塑料在线-某某塑化），没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写就留空\"}}]}}。"
+    "\"seller\": \"报价方：贸易商名或市场名（如 生意社华东/塑料在线-某某塑化），没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写就留空\", "
+    "\"kind\": \"市场价|贸易商|厂家|基准价|评述\"}}]}}。"
+    "kind：市场价=行情站/资讯机构按地区给的市场价、主流价、含税参考价（如“华东 LLDPE 膜料 9630”“余姚市场 7042 9650”）；"
+    "贸易商=具体贸易商/店铺的报价（有公司名）；厂家=石化厂/生产商自己的出厂价、挂牌价（如“山东万华化学 华东地区 LLDPE 7042 报 10700”）；"
+    "基准价=生意社基准价、全国均价；评述=期货公司/研报里顺带提的价格（没写地区或牌号）。"
+    "warehouse 只写页面上明确写出的地区/市场，没写就留空，不要猜。"
     "只要人民币元/吨的报价，元/kg 换算；行情站的“市场价/主流价”也算一条（seller 写市场名，delivery 写 市场价）；"
     "日期尽量从页面上取（更新时间、发布时间），取不到留空；今天是 {today}，只写了“11月2日”这种月日的，按今年补全年份（日期在今天之后就算去年）。"
-    "生意社“基准价”、行情站“主流价/均价”也各算一条（seller 写生意社基准价 等，warehouse 写 华东 或 全国）。"
+    "生意社“基准价”、行情站“主流价/均价”也各算一条（seller 写生意社基准价 等，warehouse 写 全国，页面明确是华东才写华东）。"
     "最多 20 条，优先华东（上海/杭州/宁波/江苏/浙江）与价格低的。\n\n网页：{url}\n正文：\n{text}"
 )
 # 默认目标（没有日报时的兜底）：厂家+牌号
@@ -347,6 +351,48 @@ def web_queries(family: str, depth: str = "标准") -> list[str]:
     return list(dict.fromkeys(qs))[:n]
 
 
+# 区域行情日报（RSS）：按华东/华北/华南给 LLDPE/LDPE/HDPE 膜料的含税参考价，比厂家挂牌价更接近贸易商成交价。
+# 2026-11 实测：搜索接口搜不到它，所以直接读 RSS。
+MARKET_FEEDS: list[tuple[str, str]] = [("https://www.replasinfo.com/category/market-intelligence/feed/", "新塑料行情")]
+
+
+def market_feed_pages(today: _date, per_feed: int = 1, echo: Any = None) -> list[tuple[str, str, str]]:
+    """读区域行情日报的 RSS，取近一周最新的 per_feed 篇：[(网址, 正文, 日期)]。读不到就返回空，不影响其他来源。"""
+    import html as _html
+
+    from .sources.base import get_bytes
+    from .sources.fetch import _decode, fetch_url
+
+    out: list[tuple[str, str, str]] = []
+    for feed, kw in MARKET_FEEDS:
+        try:
+            ctype, content = get_bytes(feed)
+            xml = _decode(content, ctype or "")
+        except Exception as e:  # noqa: BLE001
+            sourcing._log(f"区域行情日报读不到（{feed[:50]}）：{str(e)[:60]}", echo)
+            continue
+        got = 0
+        for title, link in re.findall(r"<item>.*?<title>(.*?)</title>.*?<link>(.*?)</link>", xml, re.S):
+            title = _html.unescape(re.sub(r"<!\[CDATA\[|\]\]>", "", title)).strip()
+            m = re.search(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", title)
+            if kw not in title or not m:
+                continue
+            d = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            if not _fresh(d, today):
+                break                                  # RSS 按时间倒序：最新的都过期了，后面更旧
+            url = _html.unescape(link.strip())
+            try:
+                text = fetch_url(url).get("text") or ""
+            except Exception:  # noqa: BLE001
+                continue
+            if len(text) > 300:
+                out.append((url, f"{title}\n{text}", d))
+                got += 1
+            if got >= per_feed:
+                break
+    return out
+
+
 def _fresh(date_str: str, today: _date, max_age: int | None = None) -> bool:
     m = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", date_str or "")
     if not m:
@@ -384,9 +430,10 @@ def extract_web_quotes(family: str, url: str, text: str, today: _date, page_date
             continue  # 没日期或超过一周的不要：过期报价比没有还坏
         wh = (q.get("warehouse") or "").strip()[:30]
         seller = (q.get("seller") or "").strip()[:40] or host
+        kind = q.get("kind") if q.get("kind") in QUOTE_KINDS else ""
         rows.append({"family": fam, "producer": (q.get("producer") or "").strip()[:30], "grade": (q.get("grade") or "").strip()[:30],
                      "warehouse": wh, "delivery": (q.get("delivery") or "").strip()[:30], "price": price,
-                     "tax_included": bool(q.get("tax_included", True)), "note": "", "freight": freight_for(wh, freight),
+                     "tax_included": bool(q.get("tax_included", True)), "note": kind, "freight": freight_for(wh, freight),
                      "landed": price + freight_for(wh, freight), "trader": f"{seller}（{host}）" if host not in seller else seller,
                      "date": re.sub(r"[/.年月]", "-", date_str).rstrip("日-")[:10], "url": url})
     return rows
@@ -402,9 +449,10 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
     today = _date.today()
     summary: dict[str, Any] = {}
     activity.note(f"网查同类报价：{'、'.join(families)}")
+    feed_pages = market_feed_pages(today, echo=echo)          # 区域行情日报：每类都从里面抽一遍
     for fam in families:
-        seen: set[str] = set()
-        pages: list[tuple[str, str]] = []
+        seen: set[str] = {u for u, _, _ in feed_pages}
+        pages: list[tuple[str, str, str]] = list(feed_pages)
         for q in web_queries(fam, depth):
             try:
                 hits = web_search(q, limit=8, bing_first=True, timelimit="w")
@@ -449,38 +497,98 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
     return summary
 
 
+QUOTE_KINDS = ("市场价", "贸易商", "厂家", "基准价", "评述")
+
+
+def quote_kind(r: dict[str, Any]) -> str:
+    """网查报价是哪种价：新抽的存在 basis 里；旧数据按来源猜（厂家挂牌价、期货公司评述通常高于贸易商成交价）。"""
+    b = str(r.get("basis") or "")
+    for k in QUOTE_KINDS:
+        if k in b:
+            return k
+    who = str(r.get("trader") or "")
+    if re.search(r"期货|证券|研究|研报", who):
+        return "评述"
+    if re.search(r"基准价|均价", who):
+        return "基准价"
+    if (r.get("producer") or "") and re.search(r"生意社|生意宝|PriceSeek|toocle|100ppi", who + str(r.get("source_url") or "")):
+        return "厂家"
+    return "市场价"
+
+
+def short_source(name: str) -> str:
+    """“光大期货(goodsfu.10jqka.com.cn)” → “光大期货”：报告里不要网址碎片。"""
+    s = re.sub(r"[（(][^（）()]*\.[A-Za-z]{2,}[^（）()]*[）)]?", "", str(name or "")).strip()
+    return s or str(name or "")
+
+
+def _is_east(r: dict[str, Any]) -> bool:
+    wh = r.get("warehouse") or ""
+    return "华东" in wh or region_rank(wh) <= 2
+
+
+# 取价分层：先用华东的市场价 / 贸易商报价；没有再用全国的市场价、基准价；厂家挂牌价和机构评述最后才用
+WEB_TIERS = [("华东市场价", lambda r: quote_kind(r) in ("市场价", "贸易商") and _is_east(r)),
+             ("全国市场价/基准价", lambda r: quote_kind(r) in ("市场价", "贸易商", "基准价")),
+             ("厂家挂牌价/机构评述（通常高于成交价）", lambda r: True)]
+
+
+def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | None:
+    """某类树脂近 days 天网查行情：去重 → 分层 → 到厂价中位数。返回 {median, n, date, low, high, tier, who, others}。"""
+    rows, seen_copy, seen_src = [], set(), set()
+    for r in sorted(web_rows(fam, days=days, top=500), key=lambda x: str(x["quote_date"]), reverse=True):   # 新的在前
+        if not 5000 <= float(r["landed_price"] or 0) <= 30000:
+            continue
+        copy_key = (r.get("producer") or "", (r.get("grade") or "").strip(), round(float(r["price"] or 0)), str(r["quote_date"])[:10])
+        src_key = (short_source(r.get("trader") or ""), r.get("warehouse") or "", r.get("producer") or "", (r.get("grade") or "").strip())
+        if copy_key in seen_copy or src_key in seen_src:
+            continue                      # 同一条报价被几个网站转载、同一来源连着几天的同一个价：只算一次（取最新）
+        seen_copy.add(copy_key)
+        seen_src.add(src_key)
+        rows.append(r)
+    if not rows:
+        return None
+    tier, use = WEB_TIERS[-1][0], rows
+    for name, ok in WEB_TIERS:
+        sel = [r for r in rows if ok(r)]
+        if sel:
+            tier, use = name, sel
+            break
+    vals = sorted(float(r["landed_price"]) for r in use)
+    med = round(vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2, 0)
+    ids = {r["id"] for r in use}
+    others = sorted(float(r["landed_price"]) for r in rows if r["id"] not in ids)
+    return {"median": med, "n": len(use), "date": max(str(r["quote_date"]) for r in use)[:10], "low": vals[0], "high": vals[-1],
+            "tier": tier, "who": "、".join(dict.fromkeys(short_source(r.get("trader") or "")[:12] for r in use))[:60],
+            "others": (others[0], others[-1], len(others)) if others else None}
+
+
 def apply_web_market(families: list[str] | None = None, days: int = WEB_MAX_AGE_DAYS) -> list[dict[str, Any]]:
-    """把近一周网查行情（优先华东）的到厂价中位数写成估计价：贸易商日报过期时，算方案就用它（见 materials.effective_prices）。
-    用中位数不用最低：网查最低价常是促销、旧货或抽错。"""
+    """把近一周网查行情的到厂价中位数写成估计价：贸易商日报过期时，算方案就用它（见 materials.effective_prices）。
+    用中位数不用最低：网查最低价常是促销、旧货或抽错；优先华东市场价，厂家挂牌价和机构评述最后才用。"""
     out = []
     for fam in families or ["LLDPE", "LDPE", "HDPE"]:
         code = _code_for(fam)
-        rows, seen = [], set()
-        for r in web_rows(fam, days=days, top=500):
-            key = (r.get("producer") or "", (r.get("grade") or "").strip(), round(float(r["price"] or 0)), str(r["quote_date"])[:10])
-            if key in seen or not 5000 <= float(r["landed_price"] or 0) <= 30000:
-                continue                      # 同一条报价被几个网站转载，只算一次
-            seen.add(key)
-            rows.append(r)
-        if not code or not rows:
+        pick = web_market_pick(fam, days)
+        if not code or not pick:
             continue
-        east = [r for r in rows if region_rank(r.get("warehouse") or "") <= 1 or "华东" in (r.get("warehouse") or "")] or rows
-        vals = sorted(float(r["landed_price"]) for r in east)
-        med = round(vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2, 0)
-        newest = max(str(r["quote_date"]) for r in east)[:10]
-        who = "、".join(dict.fromkeys(str(r.get("trader") or "")[:16] for r in east))[:80]
+        if pick["tier"] == WEB_TIERS[-1][0]:
+            # 只有厂家挂牌价 / 机构评述：实测比贸易商成交价高 10% 上下（2026-11 万华 7042 挂 10700，华东市场 9630），不写价格卡
+            out.append({"family": fam, "code": code, **pick, "applied": False})
+            continue
+        src = (f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} {pick['tier']} 近 {days} 天 {pick['n']} 条（{pick['who']}），含运费到厂"
+               + (f"；另有 {pick['others'][2]} 条其他口径 {pick['others'][0]:.0f}~{pick['others'][1]:.0f} 未计入" if pick["others"] else ""))
         eff = MAT.effective_prices()
         for c in FAMILY_CODES.get(fam, [code]):                  # 同类所有代码一起（LL / LLC 都是 7042）
             if not MAT.get_material(c):
                 continue
             cur = eff.get(c) or {}
-            if cur.get("type") == "estimate" and abs(cur.get("price", 0) - med) < 1 and str(cur.get("date", ""))[:10] == newest:
+            if (cur.get("type") == "estimate" and abs(cur.get("price", 0) - pick["median"]) < 1
+                    and str(cur.get("date", ""))[:10] == pick["date"] and cur.get("source") == src):
                 continue
-            pricing.record_price(c, med, "estimate", price_date=newest,
-                                 source=f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} 近 {days} 天 {len(east)} 条（{who}），含运费到厂",
+            pricing.record_price(c, pick["median"], "estimate", price_date=pick["date"], source=src,
                                  note="网查行情，未询价核实；有新的贸易商日报会优先用日报")
-        out.append({"family": fam, "code": code, "median": med, "n": len(east), "date": newest,
-                    "low": vals[0], "high": vals[-1]})
+        out.append({"family": fam, "code": code, **pick, "applied": True})
     return out
 
 

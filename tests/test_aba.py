@@ -292,6 +292,7 @@ def test_campaign_clean_and_report(aba_prices, monkeypatch):
     doc = Document(str(path))
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "一、结论" in text and "每档最省" in text and "按吨和按面积" in text and "第 1 轮" in text
+    assert "厚度不变（4.5 丝）时每档最省" in text and "goodsfu" not in text
     assert len(doc.tables) >= 4
     assert C.latest_files()["运行报告"].endswith(".docx")
 
@@ -335,3 +336,23 @@ def test_cheap_unbuyable_material_listed_as_lead(aba_prices):
     assert "询个价就能进方案" in note and "RLX" in note and "比 R1 便宜" in note
     db.execute("DELETE FROM prices WHERE material_code='RLX'")
     db.execute("DELETE FROM materials WHERE code='RLX'")
+
+
+
+def test_fixed_thickness_groups_and_colored_materials(aba_prices):
+    import datetime as _dt
+
+    r = E.plan_round(30, t_ref=4.5, n_new=0)
+    fixed = [t for t in r["trials"] if "厚度不变" in t["purpose"]]
+    assert fixed and all(t["design"].thickness == 4.5 for t in fixed)              # 同厚度就能省的单独列出来
+    thick = [t for t in r["trials"] if t["purpose"].startswith("降本") and t["design"].thickness > 4.5]
+    assert thick and all("加厚到" in t["purpose"] and "按面积" in t["purpose"] for t in thick)
+    # 黑色 / 有色回料：再便宜也不进透明膜的方案，也不当“询价线索”
+    today = _dt.date.today().isoformat()
+    MAT.upsert_material({"code": "RBK", "name": "再生高压黑色一级颗粒（测试）", "category": "再生料", "is_recycled": 1})
+    MAT.add_price("RBK", 4000, "actual", source="测试实价", price_date=today)
+    out = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True})
+    used = {k for items in out["groups"].get("加新料", {}).values() for ev in items for k in ev["design"].whole()}
+    assert "RBK" not in used and out["skipped"]["RBK"].startswith("有色")
+    db.execute("DELETE FROM prices WHERE material_code='RBK'")
+    db.execute("DELETE FROM materials WHERE code='RBK'")

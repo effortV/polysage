@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import date
 from pathlib import Path
@@ -55,6 +56,10 @@ def _pct(ref: float | None, cost: float | None) -> str:
     return "持平" if abs(p) < 0.05 else (f"省 {p:.1f}%" if p > 0 else f"贵 {-p:.1f}%")
 
 
+def _m2s(v: float | None) -> str:
+    return f"{v:.3f}" if v else ""
+
+
 def _scenarios() -> list[dict[str, Any]]:
     out = []
     for name in ("current", "live", "fut1", "fut2"):
@@ -84,6 +89,14 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
         runs[s["name"]] = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True, "scenario": s["name"], "t_ref": t_ref, "top_k": 3})
     cur = runs["current"]
     ref = cur["ref"]
+    fixed = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": False, "t_ref": t_ref, "t_min": t_ref, "t_max": t_ref, "top_k": 3})
+    fixed95 = O.run({"md_req": 0.95, "td_req": 0.95, "use_new": False, "t_ref": t_ref, "t_min": t_ref, "t_max": t_ref, "top_k": 1})
+    from ..daily_quotes import short_source
+
+    def per_m2(ev: dict[str, Any]) -> str:
+        if ev.get("cost_m2") and ref.get("cost_m2"):
+            return f"，每平方米 {ev['cost_m2']:.3f} 元（{_pct(ref['cost_m2'], ev['cost_m2'])}）"
+        return ""
     doc = W.new_doc(f"ABA 三层膜降本 · 第 {round_no} 轮运行报告", f"对照：现配方 {t_ref:g} 丝　·　{len(trials)} 组试验")
 
     # 一、结论
@@ -91,9 +104,13 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     ll = cur["scenario"].get("ref") or {}
     concl = []
     if ll.get("LL"):
-        concl.append(f"**价格**：LLDPE 价格卡 {ll['LL']:.0f} 元/吨（{ll.get('LL_date')}，{ll.get('LL_source', '')}）。"
-                     + "".join(f" {s['label']}：LLDPE ≈ {s['prices'].get('LL', 0):.0f}（×{s['ratio']:.3f}）。"
-                               for s in scens if s["name"] != "current"))
+        src = short_source((P.price_row("LL") or {}).get("source") or ll.get("LL_source", ""))
+        by_ratio: dict[float, list[str]] = {}
+        for s in scens:
+            if s["name"] != "current":
+                by_ratio.setdefault(round(s["ratio"], 3), []).append(s["label"])
+        concl.append(f"**价格**：LLDPE 价格卡 {ll['LL']:.0f} 元/吨（{ll.get('LL_date')}，{src[:90]}）。"
+                     + "".join(f" {' / '.join(labels)}：LLDPE ≈ {ll['LL'] * r:.0f}（×{r:.3f}）。" for r, labels in by_ratio.items()))
     concl.append(f"**现配方**：{ref['text']}，当前价 **{ref['cost']:.0f} 元/吨**，透光{ref['grade_label']}。" if ref.get("cost")
                  else f"**现配方**：{ref['text']}（缺价）。")
     best_line = []
@@ -113,7 +130,20 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
         concl.append("**每档最省（当前价，纵横拉断力不低于现配方，只用现有四种料）**：" + "；".join(best_line) + "。"
                      f"现配方每平方米 {ref.get('cost_m2') or 0:.3f} 元。")
         concl.append("**注意按吨和按面积不一样**：多填充、加厚的方案每吨便宜，但膜更重、每平方米用料更多；"
-                     "客户按重量买看元/吨，按面积或卷长买要看元/m²，必要时把厚度固定再算。")
+                     "客户按重量买看元/吨，按面积或卷长买要看元/m²。")
+    fx_line, prev_key = [], None
+    for g in (2, 1, 0):
+        ev = (fixed["groups"].get("现有料", {}).get(g) or [None])[0]
+        if ev and ev["design"].key() == prev_key:
+            fx_line[-1] = fx_line[-1].replace("：", f"（{R.GRADE_LABEL[g]}同）：", 1)
+        elif ev:
+            fx_line.append(f"透光≥{R.GRADE_LABEL[g]}：{ev['cost']:.0f} 元/吨（{_pct(ref.get('cost'), ev['cost'])}{per_m2(ev)}）")
+        prev_key = ev["design"].key() if ev else None
+    if fx_line:
+        ev95 = (fixed95["groups"].get("现有料", {}).get(1) or [None])[0]
+        concl.append(f"**厚度不变（{t_ref:g} 丝）时每档最省**：" + "；".join(fx_line) + "。"
+                     + (f"拉断力放宽到现配方的 95%，透光≥好 能到 {ev95['cost']:.0f} 元/吨（{_pct(ref.get('cost'), ev95['cost'])}）。"
+                        if ev95 else ""))
     newer = [ev for items in (cur["groups"].get("加新料") or {}).values() for ev in items]
     concl.append(f"**新料**：有 {len(newer)} 个方案比只用现有料更省（见第六节），要先确认料源和外观。" if newer
                  else "**新料**：按现在的价格和系数，加/换新料都不比只用现有料更省；降本主要靠 B 层填充和厚度。")
@@ -131,7 +161,8 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     # 二、价格
     doc.add_heading("二、价格", level=1)
     if market:
-        label = {"forecast": "期货与走势", "web": "网查贸易商报价", "materials": "回料/填充报价"}
+        label = {"forecast": "价格预判（现价 → 1 个月）", "web": "网查同类报价", "price_card": "写进价格卡",
+                 "materials": "回料/填充报价", "web_error": "网查出错", "forecast_error": "预判出错", "materials_error": "回料网查出错"}
         W.para(doc, "**这次更新行情**：" + "；".join(f"{label.get(k, k)}：{_flat(v)}" for k, v in market.items()
                                                  if k != "at" and v)[:900])
     ctx = Ctx(prices=scens[0]["prices"])
@@ -142,10 +173,14 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
         rows.append({"代码": c, "名称": ctx.mats.get(c, {}).get("name", ""), "当前价(元/吨)": ctx.prices.get(c),
                      "报价日期": pr.get("price_date") or "", "类型": ("网查行情（日报过期）" if str(pr.get("why", "")).startswith("网查价") else
                              {"actual": "实价", "estimate": "估计/网查"}.get(pr.get("price_type"), "")),
-                     "来源": (pr.get("source") or "")[:50]})
+                     "来源": short_source(pr.get("source") or "")[:70]})
     W.add_table(doc, rows, widths_cm=[1.3, 4.2, 2.0, 2.0, 1.8, 6.2], font_size=8.5)
+    common = [n for n in scens[0]["notes"]]                    # 每个场景都有的那句（LLDPE 按什么价）只说一次
+    for n in common:
+        W.note(doc, n)
     W.add_table(doc, [{"价格场景": s["label"], "LLDPE(元/吨)": s["prices"].get("LL"), "相对价格卡": f"×{s['ratio']:.3f}",
-                       "说明": "；".join(s["notes"])[:120]} for s in scens], widths_cm=[3.6, 2.4, 2.0, 9.5], font_size=8.5)
+                       "说明": "；".join(n for n in s["notes"] if n not in common)[:120]} for s in scens],
+                widths_cm=[3.6, 2.4, 2.0, 9.5], font_size=8.5)
     W.note(doc, "国内只有 LLDPE 有期货（大商所 L）：新料 PE 按 1.0 联动，再生料按 0.6 跟随，填充料和助剂不变。")
     if cleaned:
         W.note(doc, "清掉的明显抽错的网查价：" + "；".join(cleaned))
@@ -153,24 +188,29 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     # 三、现配方在不同价格下
     doc.add_heading("三、现配方在不同价格下", level=1)
     W.add_table(doc, [{"价格场景": s["label"], "元/吨": runs[s["name"]]["ref"].get("cost"), "克重 g/m²": runs[s["name"]]["ref"].get("gsm"),
-                       "元/m²(参考)": runs[s["name"]]["ref"].get("cost_m2")} for s in scens], font_size=9)
+                       "元/m²(参考)": _m2s(runs[s["name"]]["ref"].get("cost_m2"))} for s in scens], font_size=9)
 
     # 四、分档最低成本（当前价）
     doc.add_heading("四、分档最低成本（当前价，纵横拉断力不低于现配方）", level=1)
-    for gname in ("现有料", "加新料"):
-        per = cur["groups"].get(gname) or {}
-        lines = []
+    for gname in ("现有料", "厚度不变", "加新料"):
+        per = (fixed if gname == "厚度不变" else cur)["groups"].get("现有料" if gname == "厚度不变" else gname) or {}
+        lines, shown = [], set()
         for g in (2, 1, 0):
-            for i, ev in enumerate(per.get(g) or [], 1):
+            items = [ev for ev in (per.get(g) or []) if not (gname == "厚度不变" and ev["design"].key() in shown)]
+            shown |= {ev["design"].key() for ev in items}
+            for i, ev in enumerate(items, 1):
                 d = ev["design"]
                 lines.append({"透光要求": f"≥{R.GRADE_LABEL[g]}", "#": i, "A 层": f"{d.a_ratio:.0%}：{layer_text(d.a)}",
                               "B 层": f"{1 - d.a_ratio:.0%}：{layer_text(d.b)}", "厚度": d.thickness, "元/吨": ev["cost"],
                               "较现配方": _pct(ref.get("cost"), ev["cost"]), "纵/横": f"{ev['md_rel']:.2f}/{ev['td_rel']:.2f}",
-                              "透光": ev["grade_label"], "元/m²": ev.get("cost_m2"), "把握": ev["confidence"]})
-        doc.add_heading("只用现有四种料（LLDPE / 再生回料 / 填充母料 / HDPE）" if gname == "现有料"
-                        else "加 / 换新料（只列比现有料最优更省的）", level=2)
+                              "透光": ev["grade_label"], "元/m²": _m2s(ev.get("cost_m2")), "把握": ev["confidence"]})
+        doc.add_heading({"现有料": "只用现有四种料（LLDPE / 再生回料 / 填充母料 / HDPE），厚度可调",
+                         "厚度不变": f"只用现有四种料，厚度不变（{t_ref:g} 丝）：客户按面积买、厚度有规格时看这张",
+                         "加新料": "加 / 换新料（只列比现有料最优更省的）"}[gname], level=2)
         if lines:
             W.add_table(doc, lines, widths_cm=[1.5, 0.6, 3.4, 4.2, 1.0, 1.3, 1.5, 1.6, 1.0, 1.2, 1.0], font_size=8)
+            if gname == "厚度不变" and not any(ln["透光要求"] == "≥一般" for ln in lines):
+                W.note(doc, "厚度不变时，“一般”档没有比“好”档更省的方案（再多加填充，拉断力就不够了）。")
         else:
             W.para(doc, "没有（在约束内找不到，或不比只用现有料省）。")
         if gname == "现有料":
@@ -205,23 +245,45 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
                        + _flat(discover[k])[:900])
     found = [m for m in list_materials(active_only=False) if (m.get("origin") or "").startswith("智能体")]
     in_best = {k for ev in newer for k in ev["design"].whole()}
+    skipped = cur.get("skipped") or {}
+
+    def verdict(code: str) -> str:
+        if code in in_best:
+            return "进入了更省的方案"
+        if code not in ctx.prices:
+            return "缺价"
+        w = skipped.get(code)
+        if not w:
+            return "不比现有料省"
+        if w.startswith("线索"):
+            m_ = re.search(r"20\d{2}-\d{2}-\d{2}", w)
+            old = bool(m_) and (date.today() - date.fromisoformat(m_.group(0))).days > 30
+            return "比现有料便宜，询价后可进方案" + (f"（网查价是 {m_.group(0)} 的，先核实）" if old else "")
+        return w
+
     if found:
         W.add_table(doc, [{"代码": m["code"], "名称": m["name"], "类别": m.get("category"),
                            "价格(元/吨)": ctx.prices.get(m["code"]), "发现于": (m.get("discovered_at") or "")[:10],
-                           "结论": "进入了更省的方案" if m["code"] in in_best else ("缺价" if m["code"] not in ctx.prices else "不比现有料省")}
-                          for m in found], widths_cm=[1.2, 6.0, 2.2, 2.0, 2.0, 3.6], font_size=8.5)
+                           "结论": verdict(m["code"])}
+                          for m in found], widths_cm=[1.2, 5.2, 2.0, 1.8, 1.8, 5.0], font_size=8.5)
     else:
         W.para(doc, "库里还没有智能体找到的新料。")
 
     # 七、本轮试验
     doc.add_heading(f"七、第 {round_no} 轮试验怎么安排", level=1)
     W.add_table(doc, [{"类别": k, "组数": v} for k, v in counts.items()], widths_cm=[4, 2], font_size=9)
-    cheapest = sorted((t for t in trials if t["purpose"].startswith(("降本", "利用"))),
-                      key=lambda t: t["predicted"].get("cost") or 1e9)[:5]
+    pool = sorted((t for t in trials if t["purpose"].startswith(("降本", "利用"))), key=lambda t: t["predicted"].get("cost") or 1e9)
+    cheapest = [t for t in pool if "厚度不变" in t["purpose"]]
+    for g in (2, 1, 0):                                   # 每档最省的一组（靠加厚的）
+        t_ = next((t for t in pool if t["predicted"].get("grade") == g and t not in cheapest), None)
+        if t_:
+            cheapest.append(t_)
+    cheapest = cheapest[:6]
     if cheapest:
         W.para(doc, "**预测最省的几组（优先做）**：")
         W.bullets(doc, [f"{t['code']}：{t['design'].text()}，预计 {t['predicted'].get('cost'):.0f} 元/吨，"
-                        f"透光{t['predicted'].get('grade_label')}" for t in cheapest])
+                        f"透光{t['predicted'].get('grade_label')}" + ("（厚度不变）" if "厚度不变" in t["purpose"] else "")
+                        for t in cheapest])
 
     # 八、下一步
     doc.add_heading("八、做完以后", level=1)
@@ -233,9 +295,8 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
         "价格变了随时可以问配方助手“按今天的价格/期货价重新算”，或在这里再跑一轮。",
     ], numbered=True)
     doc.add_heading("说明与局限", level=2)
-    W.bullets(doc, list(dict.fromkeys(cur["notes"]))[:6] + [
-        "纵向/横向拉断力是相对现配方（同配方、对照厚度）的倍数；透光三档由定性透光分预测，都需要实验验证。",
-        "按吨计价：厚度不改变每吨价格；客户按面积买时看“元/m²”。"])
+    W.bullets(doc, [n for n in dict.fromkeys(cur["notes"]) if n not in common][:6] + [
+        "纵向/横向拉断力是相对现配方（同配方、对照厚度）的倍数；透光三档由定性透光分预测，都需要实验验证。"])
     path = KB["experiment"] / f"ABA第{round_no}轮运行报告_{date.today().isoformat()}.docx"
     return W.save(doc, path)
 

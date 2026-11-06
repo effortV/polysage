@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -70,6 +71,11 @@ ALT_MIN_RATIO = 0.8            # PE 新料价格低于同类现有料八成：�
 SAME_FAMILY = {"lldpe": BASE_RESIN, "lldpe_c6": BASE_RESIN, "mlldpe": BASE_RESIN, "ldpe": "LD", "hdpe": HDPE_CODE, "mdpe": HDPE_CODE}
 SLOT_BASE = {**SAME_FAMILY, "recycled_ld": BASE_RECYCLED, "recycled_ll": BASE_RECYCLED, "pcr": BASE_RECYCLED,
              "filler": FILLER_CODE, "clear_filler": FILLER_CODE, "talc": FILLER_CODE}
+COLORED = re.compile(r"黑色|黑料|杂色|花料|有色|彩色|灰色|深色")   # 透明膜用不了的有色回料（规则里回料都按近新料色算，会误判）
+
+
+def colored(m: dict[str, Any]) -> bool:
+    return bool(COLORED.search(f"{m.get('name') or ''} {m.get('grade') or ''}"))
 
 
 def alt_problem(ctx: Ctx, code: str, eff: dict[str, dict[str, Any]] | None = None) -> str:
@@ -80,6 +86,8 @@ def alt_problem(ctx: Ctx, code: str, eff: dict[str, dict[str, Any]] | None = Non
 
     if code in CURRENT_CODES:
         return ""
+    if colored(ctx.mats.get(code) or {}):
+        return "有色/黑色料，透明膜用不了"
     e = (eff if eff is not None else effective_prices()).get(code)
     if not e:
         return "没有价格"
@@ -110,7 +118,8 @@ def _usable(ctx: Ctx, exclude: set[str], skipped: dict[str, str] | None = None) 
         if not procurement.is_buyable(code):
             # 比同位置的现有料便宜、但只有网查参考价的：值得询个价——单独列出来，别悄悄丢掉
             base = SLOT_BASE.get(ctx.role.get(code, ""))
-            if skipped is not None and base and base != code and ctx.prices.get(base) and ctx.prices[code] < ctx.prices[base]:
+            if (skipped is not None and base and base != code and ctx.prices.get(base) and ctx.prices[code] < ctx.prices[base]
+                    and not colored(m)):
                 e = eff.get(code) or {}
                 skipped[code] = (f"线索：{ctx.prices[code]:.0f} 元/吨（{str(e.get('date') or '')[:10]} 网查参考），"
                                  f"比 {base} 便宜 {(1 - ctx.prices[code] / ctx.prices[base]) * 100:.0f}%，没有能下单的报价")
@@ -319,13 +328,16 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
                 f"{c} {ctx.mats.get(c, {}).get('name', '')}（{leads[c][3:]}）" for c in top)
                 + (f" 等 {len(leads)} 种" if len(leads) > 6 else "") + "。拿到正式报价后在对话里告诉配方助手，或在「价格与供应商」登记。")
         if stale:
-            notes.append("这些料没进“加新料”（价格太旧或明显不对，先查价/询价）：" + "；".join(
+            notes.append("这些料没进“加新料”（价格太旧、明显不对或透明膜用不了）：" + "；".join(
                 f"{c} {ctx.mats.get(c, {}).get('name', '')}：{w}" for c, w in list(stale.items())[:6]) + "。")
-    notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度。"
-                 "填充多、厚度大的方案每吨便宜但每平方米用料多——“元/m²(参考)”一栏给出同一张膜的料钱，"
-                 "客户按面积买或厚度有规格时请把厚度固定再算。")
+    if q.t_min == q.t_max:
+        notes.append(f"厚度固定 {q.t_min:g} 丝：填充母料密度大，同样厚度的膜更重，按吨省的方案按面积（每平方米）不一定省，看“元/m²”。")
+    else:
+        notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度。"
+                     "填充多、厚度大的方案每吨便宜但每平方米用料多——“元/m²(参考)”一栏给出同一张膜的料钱；"
+                     f"客户按面积买或厚度有规格时，看厚度固定（{q.t_ref:g} 丝）的方案。")
     return {"query": asdict(q), "scenario": {k: scen[k] for k in ("name", "label", "ratio", "ref")}, "ref": ref_eval,
-            "groups": groups_out, "notes": notes, "n_evaluated": n_eval, "uncertain": uncertain}
+            "groups": groups_out, "notes": notes, "n_evaluated": n_eval, "uncertain": uncertain, "skipped": skipped}
 
 
 # ---------------- 给人看的 ----------------

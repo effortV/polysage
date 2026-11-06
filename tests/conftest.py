@@ -209,6 +209,9 @@ def _no_paid_search(monkeypatch):
         raise RuntimeError("测试环境不联网检索")
 
     monkeypatch.setattr(WS, "_search", _offline)
+    import polysage.daily_quotes as DQ
+
+    monkeypatch.setattr(DQ, "MARKET_FEEDS", [])                # 区域行情日报 RSS 也不读
 
 
 @pytest.fixture(scope="session")

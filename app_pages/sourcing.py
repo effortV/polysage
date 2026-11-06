@@ -165,7 +165,8 @@ def _render_tab_forecast() -> None:
 
 # ---------------- 网查对照 ----------------
 def _render_tab_run() -> None:
-    st.caption("按贸易商日报同样的口径（厂家 + 牌号 + 仓库地 + 货物状态 + 含税价）到行情站/报价页网查近两周的报价，只作对照，不进价格卡。"
+    st.caption("按贸易商日报同样的口径（厂家 + 牌号 + 仓库地 + 货物状态 + 含税价）到行情站/报价页和区域行情日报网查近一周的报价。"
+               "贸易商日报超过 3 周没更新时，价格卡按网查的华东市场价中位数计；厂家挂牌价、期货公司评述通常偏高，只作参考，不写价格卡。"
                "检索目标取自最近日报里的厂家+牌号（没有日报时用默认牌号表）。")
     fams = [f for f in daily_quotes.FAMILIES if f != "其他"]
     c1, c2 = st.columns([3, 1])
@@ -222,8 +223,7 @@ def _render_tab_run() -> None:
     mrows = []
     for c in codes_all:
         for i, r in enumerate(daily_quotes.material_rows(c, top=5), 1):
-            cur = MAT.current_prices().get(c, {})
-            cur_p = cur.get("actual") if cur.get("actual") is not None else cur.get("estimate")
+            cur_p = MAT.effective_price(c)
             mrows.append({"代码": c, "材料": (MAT.get_material(c) or {}).get("name", c), "名次": i, "供应商": r["supplier"],
                           "类型": r["kind"], "地区": r["region"], "规格": r["grade"], "报价": r["price"], "到厂价": r["landed_price"],
                           "价格卡": cur_p, "起订量": r["moq"], "联系方式": r["contact"], "日期": r["quote_date"], "来源": r["source_url"]})
@@ -234,13 +234,20 @@ def _render_tab_run() -> None:
 
 
 def _render_web_compare(fams: list[str]) -> None:
-    rows = []
+    rows, picks = [], []
     for f in fams:
-        for i, r in enumerate(daily_quotes.web_rows(f), 1):
-            rows.append({"类别": daily_quotes.FAMILY_LABEL[f], "名次": i, "牌号": r["grade"], "仓库地": r["warehouse"], "货物状态": r["delivery"],
-                         "含税价": r["price"], "到厂价": r["landed_price"], "报价方": r["trader"], "日期": r["quote_date"], "来源": r["source_url"]})
+        for i, r in enumerate(daily_quotes.web_rows(f, top=8), 1):
+            rows.append({"类别": daily_quotes.FAMILY_LABEL[f], "名次": i, "口径": daily_quotes.quote_kind(r), "牌号": r["grade"],
+                         "仓库地": r["warehouse"], "货物状态": r["delivery"], "含税价": r["price"], "到厂价": r["landed_price"],
+                         "报价方": daily_quotes.short_source(r["trader"]), "日期": r["quote_date"], "来源": r["source_url"]})
+        p = daily_quotes.web_market_pick(f)
+        if p:
+            picks.append(f"{daily_quotes.FAMILY_LABEL[f]}：{p['median']:.0f}（{p['tier']} {p['n']} 条）"
+                         + ("——只有挂牌价/评述，不写价格卡" if p["tier"] == daily_quotes.WEB_TIERS[-1][0] else ""))
+    if picks:
+        st.caption("网查行情中位（日报过期时价格卡用它）：" + "；".join(picks))
     if rows:
-        st.subheader("网查对照（近两周，每类前 5）")
+        st.subheader("网查对照（近一周，每类前 8）")
         st.dataframe(pd.DataFrame(rows), hide_index=True, column_config={"来源": st.column_config.LinkColumn()}, **ui.WIDE)
     else:
         st.info("还没有网查报价；点“开始网查”。")

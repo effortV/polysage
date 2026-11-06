@@ -200,6 +200,23 @@ def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str
     ref_cost = ctx.cost(ref)
     q = {"md_req": md_req, "td_req": td_req, "scenario": scenario, "t_ref": t_ref, "top_k": 8}
     cur = O.run({**q, "use_new": False})
+    ref_m2 = cur["ref"].get("cost_m2")
+
+    def m2_text(ev: dict[str, Any]) -> str:
+        if not ref_m2 or not ev.get("cost_m2"):
+            return ""
+        p = (ev["cost_m2"] - ref_m2) / ref_m2 * 100
+        return "，按面积持平" if abs(p) < 0.5 else (f"，按面积贵 {p:.1f}%" if p > 0 else f"，按面积省 {-p:.1f}%")
+
+    # 厚度不变的降本：客户按面积买、或厚度有规格时，只有这些能直接用
+    fixed = O.run({**q, "use_new": False, "t_min": t_ref, "t_max": t_ref})
+    for g in sorted(fixed["groups"].get("现有料", {}), reverse=True):
+        for ev in fixed["groups"]["现有料"][g][:1]:
+            if not ref_cost or ev["cost"] >= ref_cost - 1:
+                break
+            pct = (ref_cost - ev["cost"]) / ref_cost * 100
+            add(ev["design"], f"降本：厚度不变 {t_ref:g} 丝，透光≥{R.GRADE_LABEL[g]} 预测最省"
+                              f"（{ev['cost']:.0f} 元/吨，省 {pct:.1f}%{m2_text(ev)}）")
     per = cur["groups"].get("现有料", {})
     want = max(1, math.ceil(n_exploit / max(1, len(per))))
     for g in sorted(per, reverse=True):
@@ -210,7 +227,10 @@ def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str
             if got >= (want if cheaper else min(2, want)) or n_done >= n_exploit:
                 break
             pct = abs(ref_cost - ev["cost"]) / ref_cost * 100 if ref_cost else 0.0
-            why = (f"降本：透光≥{R.GRADE_LABEL[g]} 预测最省（{ev['cost']:.0f} 元/吨，省 {pct:.1f}%）" if cheaper else
+            t = ev["design"].thickness
+            t_note = (f"；加厚到 {t:g} 丝{m2_text(ev)}" if t > t_ref + 1e-9 else
+                      f"；减薄到 {t:g} 丝{m2_text(ev)}" if t < t_ref - 1e-9 else m2_text(ev).replace("，", "；", 1))
+            why = (f"降本：透光≥{R.GRADE_LABEL[g]} 预测最省（{ev['cost']:.0f} 元/吨，省 {pct:.1f}%{t_note}）" if cheaper else
                    f"提透光：透光{R.GRADE_LABEL[g]}里最省（{ev['cost']:.0f} 元/吨，比现配方贵 {pct:.1f}%）")
             if add(ev["design"], why):
                 got += 1
@@ -293,7 +313,9 @@ def export_round_docx(round_no: int, t_ref: float = DEFAULT_T_REF, batch_kg: flo
     counts = meta.get("counts") or {}
     explain = {
         "现配方对照": "现配方在 3.5 / 4.5 / 5.5 丝各一组：拿到拉断力的绝对值（N）和厚度效应，所有预测都以它为基准。",
-        "降本": "按当前价格，各透光档里预测比现配方便宜、且纵横拉断力不低于现配方的方案——最可能直接用上的。",
+        "降本": "按当前价格，各透光档里预测比现配方便宜、且纵横拉断力不低于现配方的方案——最可能直接用上的。"
+                "标“厚度不变”的是同样厚度下就能省的（客户按面积买、厚度有规格时只能用这些）；"
+                "其余的靠加厚把拉断力补回来，按吨省，按面积（每平方米）不一定省，目的栏里写了。",
         "提透光": "要“很好”透光就得少用或不用表层再生料，每吨会比现配方贵；这几组用来确认值不值。",
         "新料": "库里网上找到、买得到的新料，预测比只用现有料更省；打样前先确认料源、外观（本色/透明）和稳定供货。",
         "建模": "D-最优设计在 A/B 层再生比例、B 层填充、B 层 HDPE、A 层占比、厚度六个因素上铺开，"
@@ -612,6 +634,17 @@ def next_round(query: dict[str, Any] | None = None, n_exploit: int = 6, n_explor
         chosen.append((ev["design"], why))
         return True
 
+    # 利用：厚度不变（对照厚度）下每档能省的先放一组——客户按面积买时只有这些能用
+    t_ref = q.get("t_ref", DEFAULT_T_REF)
+    ref_cost = (out.get("ref") or {}).get("cost")
+    if ref_cost and not (q.get("t_min") is not None and q.get("t_min") == q.get("t_max")):
+        fixed = O.run({**q, "t_min": t_ref, "t_max": t_ref, "top_k": 3})
+        for g in sorted(fixed["groups"].get("现有料", {}), reverse=True):
+            for ev in fixed["groups"]["现有料"][g]:
+                if ev["cost"] >= ref_cost - 1:
+                    break
+                if take(ev, f"利用：厚度不变 {t_ref:g} 丝，透光≥{R.GRADE_LABEL[g]} 预测最省"):
+                    break
     # 利用：先保证每一档都有它预测最省的那组，再按成本补满
     for g in sorted(by_grade, reverse=True):
         for ev in sorted(by_grade[g], key=lambda e: e["cost"] or 1e9):

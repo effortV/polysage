@@ -38,6 +38,12 @@ def best_source(code: str) -> dict[str, Any]:
     """一种料当前最好的采购来源。"""
     m = MAT.get_material(code) or {"code": code, "name": code}
     prices = MAT.current_prices().get(code, {})
+    eff = MAT.effective_prices().get(code) or {}
+    # 0) 实价已过期、价格卡改按网查行情中位：采购清单和算方案用同一个价，提醒先询价
+    if str(eff.get("why", "")).startswith("网查价"):
+        return {"code": code, "name": m.get("name", code), "tier": "web", "price": float(eff["price"]), "quoted": float(eff["price"]),
+                "supplier": "网查行情中位（未询价）", "grade": m.get("grade") or "", "region": "华东", "delivery": "", "moq": "",
+                "contact": "", "date": eff.get("date") or "", "url": "", "basis": "到厂含税（估）", "note": eff.get("source") or ""}
     # 1) 实价
     if prices.get("actual") is not None:
         last = db.q1("SELECT * FROM prices WHERE material_code=? AND price_type='actual' ORDER BY id DESC LIMIT 1", (code,))

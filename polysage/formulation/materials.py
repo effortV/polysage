@@ -198,6 +198,12 @@ def effective_prices() -> dict[str, dict[str, Any]]:
     return out
 
 
+def effective_price(code: str, eff: dict[str, dict[str, Any]] | None = None) -> float | None:
+    """这种料现在实际按多少钱算（同 effective_prices）；没价返回 None。"""
+    e = (eff if eff is not None else effective_prices()).get(code)
+    return e["price"] if e else None
+
+
 def add_price(code: str, price: float, price_type: str = "estimate", *, source: str = "", url: str = "",
               price_date: str = "", supplier: str = "", moq: str = "", note: str = "") -> int:
     pid = db.insert("prices", {"material_code": code, "price_type": price_type, "price": float(price), "unit": "元/吨",

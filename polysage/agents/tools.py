@@ -336,7 +336,7 @@ def supplier_quotes(code: str, top: int = 8):
     return "\n".join(lines) + "\n（网查价需询价核实；在“供应商寻源”页可加入询价清单并登记实价）", []
 
 
-@tool("find_suppliers", "按贸易商日报同样的口径（厂家+牌号+仓库地+状态+含税价）网查某类树脂近两周的报价作对照（约 1～2 分钟）；不进价格卡。",
+@tool("find_suppliers", "按贸易商日报同样的口径（厂家+牌号+仓库地+状态+含税价）网查某类树脂近一周的报价作对照（约 1～2 分钟）；贸易商日报过期时价格卡按网查的华东市场价中位数计。",
       {"code": {"type": "string", "description": "材料代码，如 LL、LLC、R1"},
        "extra": {"type": "string", "description": "补充关键词，如地区、牌号"}}, ["code"])
 def find_suppliers(code: str, extra: str = ""):
@@ -351,9 +351,11 @@ def find_suppliers(code: str, extra: str = ""):
         return f"{code} 不属于 LLDPE/LDPE/HDPE/mLLDPE，网查只支持这四类。", []
     s = daily_quotes.web_market_quotes([fam], depth="快", pages_per_query=2)[fam]
     rows = daily_quotes.web_rows(fam)
-    lines = [f"网查 {fam}：{s['pages']} 个页面，{s['rows']} 条近两周报价（新增 {s['new']}）。网查价只作对照，不进价格卡。"]
+    lines = [f"网查 {fam}：{s['pages']} 个页面，{s['rows']} 条近一周报价（新增 {s['new']}）。网查价未经询价核实；"
+             "贸易商日报过期（超过 3 周）时，价格卡按网查的华东市场价中位数计，厂家挂牌价、机构评述只作参考。"]
     for r in rows:
-        lines.append(f"- {r['grade']} @ {r['warehouse'] or '未注明'}（{r['delivery'] or '-'}）含税 {r['price']:.0f} → 到厂 {r['landed_price']:.0f}，{r['trader']}，{r['quote_date']}")
+        lines.append(f"- [{daily_quotes.quote_kind(r)}] {r['grade']} @ {r['warehouse'] or '未注明'}（{r['delivery'] or '-'}）含税 {r['price']:.0f}"
+                     f" → 到厂 {r['landed_price']:.0f}，{daily_quotes.short_source(r['trader'])}，{r['quote_date']}")
     return "\n".join(lines) + "\n" + daily_quotes.picks_text(), []
 
 

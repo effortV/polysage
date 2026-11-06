@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import date, datetime
 from typing import Any
@@ -82,7 +83,8 @@ def build(name: str = "current", custom_pct: float = 0.0, *, roles: dict[str, st
     if row:
         ref.update({"LL": row["price"], "LL_date": row["price_date"], "LL_source": (row["source"] or "")[:40]})
     if row and str(row.get("why", "")).startswith("网查价"):
-        notes.append(f"LLDPE 按网查行情价 {row['price']:.0f} 元/吨计（{row['why']}）；拿到新的贸易商日报后会自动换回日报价。")
+        why = re.sub(r"^网查价（(.*)）$", r"\1", str(row["why"])).replace("实价", "贸易商日报/实价")
+        notes.append(f"LLDPE 按网查行情价 {row['price']:.0f} 元/吨计：{why}；拿到新的贸易商日报后会自动换回日报价。")
     elif ref_date and (date.today() - ref_date).days > STALE_DAYS:
         notes.append(f"价格卡上 LLDPE 的报价停在 {ref_date}（{(date.today() - ref_date).days} 天前），建议更新贸易商日报，"
                      "或用“按期货修正到今天”看现在大概多少。")

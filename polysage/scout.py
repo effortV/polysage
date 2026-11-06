@@ -217,9 +217,11 @@ def discovered(limit: int = 100) -> list[dict[str, Any]]:
     """智能体发现的料（原料库里带来源网址的那些）。"""
     rows = db.q("SELECT code, name, grade, category, origin, source_url, discovered_at FROM materials "
                 "WHERE COALESCE(source_url,'') <> '' ORDER BY discovered_at DESC, id DESC")
-    prices = current_prices()
+    from .formulation.materials import effective_prices
+
+    eff = effective_prices()
     for r in rows:
-        p = prices.get(r["code"], {})
-        r["price"] = p.get("actual") if p.get("actual") is not None else p.get("estimate")
-        r["price_tier"] = "实价" if p.get("actual") is not None else ("估计价" if p.get("estimate") is not None else "缺")
+        e = eff.get(r["code"])
+        r["price"] = e["price"] if e else None
+        r["price_tier"] = ("缺" if not e else "实价" if e["type"] == "actual" else "估计价")
     return rows[:limit]

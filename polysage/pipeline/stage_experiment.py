@@ -27,17 +27,16 @@ VARIABLES = ["LL", "LLC", "mLL", "LD", "HD", "R1", "RL", "POE"]      # 缺省顺
 def variables(max_n: int = 8) -> list[str]:
     """现配方那几种料必进；其余按“有价可算、能记数据”的候选料补齐到 max_n 个。"""
     from ..formulation import constraints as C
-    from ..formulation.materials import BASE_CODES, current_prices, list_materials
+    from ..formulation.materials import BASE_CODES, effective_prices, list_materials
     from ..ml.dataset import refresh_comp_cols
 
     COMP_COLS = refresh_comp_cols()
     base = [c for c in (list(C.base_formulation()) or list(BASE_CODES))]
-    prices = current_prices()
+    eff = effective_prices()
     rest = [m["code"] for m in list_materials(active_only=True)
             if m["code"] not in base and m["code"] in COMP_COLS            # 数据表里有这一列才排得进试验
-            and not str(m.get("use_flag") or "").startswith("否")
-            and (prices.get(m["code"], {}).get("actual") is not None or prices.get(m["code"], {}).get("estimate") is not None)]
-    rest.sort(key=lambda c: prices.get(c, {}).get("actual") or prices.get(c, {}).get("estimate") or 1e9)
+            and not str(m.get("use_flag") or "").startswith("否") and m["code"] in eff]
+    rest.sort(key=lambda c: eff[c]["price"])
     return base + rest[:max(0, max_n - len(base))]
 
 REVIEW_RECO_PROMPT = (

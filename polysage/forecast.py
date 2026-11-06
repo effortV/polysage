@@ -152,8 +152,7 @@ def _within(date_str: str, days: int) -> bool:
 
 def _current_price(family: str) -> float | None:
     codes = FAMILY_CODES.get(family) or []
-    p = MAT.current_prices().get(codes[0], {}) if codes else {}
-    return p.get("actual") if p.get("actual") is not None else p.get("estimate")
+    return MAT.effective_price(codes[0]) if codes else None
 
 
 def build(family: str, *, futures: dict[str, Any] | None = None, news: list[dict[str, str]] | None = None) -> dict[str, Any]:

@@ -218,3 +218,19 @@ def test_answer_doc_export_and_file_detection(home):
     d = Document(str(doc))
     assert any("方案" in p.text for p in d.paragraphs)
     assert d.tables and d.tables[0].cell(0, 0).text == "料" and d.tables[0].cell(1, 1).text == "9670"
+
+
+def test_stale_actual_uses_same_price_everywhere(home):
+    """实价过期（>3 周）、价格卡改按网查行情时：采购清单、价格预判的“现价”和算方案用同一个价，不再拿 9 月的旧实价。"""
+    from polysage import forecast
+
+    MAT.seed_materials()
+    _clear_actuals("HD")
+    old = (date.today() - timedelta(days=40)).isoformat()
+    new = (date.today() - timedelta(days=2)).isoformat()
+    MAT.add_price("HD", 9300, "actual", source="旧日报", price_date=old)
+    MAT.add_price("HD", 9510, "estimate", source="网查行情中位：测试", price_date=new)
+    s = P.best_source("HD")
+    assert s["tier"] == "web" and s["price"] == 9510 and "未询价" in s["supplier"] and P.is_buyable("HD")
+    assert forecast._current_price("HDPE") == 9510 == MAT.effective_price("HD")
+    db.execute("DELETE FROM prices WHERE material_code='HD' AND source IN ('旧日报', '网查行情中位：测试')")
