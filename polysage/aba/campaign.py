@@ -140,7 +140,8 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     for c in used:
         pr = P.price_row(c) or {}
         rows.append({"代码": c, "名称": ctx.mats.get(c, {}).get("name", ""), "当前价(元/吨)": ctx.prices.get(c),
-                     "报价日期": pr.get("price_date") or "", "类型": {"actual": "实价", "estimate": "估计/网查"}.get(pr.get("price_type"), ""),
+                     "报价日期": pr.get("price_date") or "", "类型": ("网查行情（日报过期）" if str(pr.get("why", "")).startswith("网查价") else
+                             {"actual": "实价", "estimate": "估计/网查"}.get(pr.get("price_type"), "")),
                      "来源": (pr.get("source") or "")[:50]})
     W.add_table(doc, rows, widths_cm=[1.3, 4.2, 2.0, 2.0, 1.8, 6.2], font_size=8.5)
     W.add_table(doc, [{"价格场景": s["label"], "LLDPE(元/吨)": s["prices"].get("LL"), "相对价格卡": f"×{s['ratio']:.3f}",

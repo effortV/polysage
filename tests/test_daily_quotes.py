@@ -104,3 +104,32 @@ def test_web_market_quotes_keeps_only_fresh_pages(monkeypatch, home):
     purged = D.purge_old_web_quotes()
     assert purged["quotes"] >= 1 and db.q1("SELECT id FROM suppliers WHERE name='旧网查商家'") is None
     assert len(D.web_rows("LLDPE")) == 1                                          # 新口径的网查报价保留
+
+
+def test_web_market_updates_price_card_when_daily_is_stale(home):
+    """日报过期（>3 周）+ 有近一周网查行情 → 价格卡按网查中位算；日报新的时候还是用日报。"""
+    import datetime as _dt
+
+    from polysage import daily_quotes as DQ
+    from polysage import db
+    from polysage.aba.model import current_price_map
+    from polysage.formulation import materials as MAT
+
+    MAT.seed_materials()
+    old = (_dt.date.today() - _dt.timedelta(days=40)).isoformat()
+    MAT.add_price("LD", 12150, "actual", source="贸易商日报（旧）", price_date=old)
+    today = _dt.date.today().isoformat()
+    rows = [{"family": "LDPE", "producer": p, "grade": "2426H", "warehouse": wh, "delivery": "市场价", "price": price,
+             "tax_included": True, "note": "", "freight": 0, "landed": price, "trader": tr, "date": today, "url": "https://example/x"}
+            for p, wh, price, tr in (("万华", "华东", 13015, "生意社"), ("浙石化", "杭州", 12800, "某塑化"),
+                                     ("扬子", "上海", 12900, "某贸易"), ("茂名", "广州", 12000, "华南某"))]
+    DQ.save_rows(rows, channel="网查", credibility=3)
+    out = DQ.apply_web_market(["LDPE"])
+    assert out and out[0]["median"] == 12900 and out[0]["n"] == 3                       # 只取华东三条的中位
+    eff = MAT.effective_prices()["LD"]
+    assert eff["price"] == 12900 and eff["why"].startswith("网查价")
+    assert current_price_map()["LD"] == 12900
+    MAT.add_price("LD", 12500, "actual", source="新日报", price_date=today)             # 新日报来了就用日报
+    assert MAT.effective_prices()["LD"]["price"] == 12500 and current_price_map()["LD"] == 12500
+    db.execute("DELETE FROM prices WHERE material_code='LD' AND source IN ('贸易商日报（旧）', '新日报')")
+    db.execute("DELETE FROM prices WHERE material_code='LD' AND source LIKE '网查行情中位%'")

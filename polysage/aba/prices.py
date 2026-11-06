@@ -32,13 +32,13 @@ def _cached(key: str, fn, ttl: float = 600.0):
 
 
 def price_row(code: str) -> dict[str, Any] | None:
-    """价格卡上这种料当前生效的那条（实价优先，其次估计价）。"""
-    for tier in ("actual", "estimate"):
-        r = db.q1("SELECT price, price_date, source, price_type FROM prices WHERE material_code=? AND price_type=? "
-                  "ORDER BY id DESC LIMIT 1", (code, tier))
-        if r:
-            return r
-    return None
+    """价格卡上这种料当前生效的那条（实价优先；实价过期时用更新的网查价）。"""
+    from ..formulation.materials import effective_prices
+
+    e = effective_prices().get(code)
+    if not e:
+        return None
+    return {"price": e["price"], "price_date": e["date"], "source": e["source"], "price_type": e["type"], "why": e["why"]}
 
 
 def _as_date(s: str | None) -> date | None:
@@ -81,7 +81,9 @@ def build(name: str = "current", custom_pct: float = 0.0, *, roles: dict[str, st
     ref_date = _as_date(row["price_date"]) if row else None
     if row:
         ref.update({"LL": row["price"], "LL_date": row["price_date"], "LL_source": (row["source"] or "")[:40]})
-    if ref_date and (date.today() - ref_date).days > STALE_DAYS:
+    if row and str(row.get("why", "")).startswith("网查价"):
+        notes.append(f"LLDPE 按网查行情价 {row['price']:.0f} 元/吨计（{row['why']}）；拿到新的贸易商日报后会自动换回日报价。")
+    elif ref_date and (date.today() - ref_date).days > STALE_DAYS:
         notes.append(f"价格卡上 LLDPE 的报价停在 {ref_date}（{(date.today() - ref_date).days} 天前），建议更新贸易商日报，"
                      "或用“按期货修正到今天”看现在大概多少。")
     ratio = 1.0

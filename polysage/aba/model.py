@@ -74,14 +74,10 @@ def base_design(t_ref: float = DEFAULT_T_REF, *, filler: float = 0.0, hdpe: floa
 
 
 def current_price_map() -> dict[str, float]:
-    from ..formulation.materials import current_prices
+    """每种料按生效价（实价优先；实价过期时用更新的网查价）。"""
+    from ..formulation.materials import effective_prices
 
-    out = {}
-    for code, p in current_prices().items():
-        v = p.get("actual") if p.get("actual") is not None else p.get("estimate")
-        if v is not None:
-            out[code] = float(v)
-    return out
+    return {code: e["price"] for code, e in effective_prices().items()}
 
 
 class Ctx:

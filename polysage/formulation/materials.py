@@ -120,13 +120,16 @@ def purge_assumed(delete: bool = True) -> dict[str, Any]:
 def list_materials(active_only: bool = True) -> list[dict[str, Any]]:
     rows = db.q("SELECT * FROM materials" + (" WHERE active=1" if active_only else "") + " ORDER BY id")
     prices = current_prices()
+    eff = effective_prices()
     for r in rows:
         r["effects"] = db.loads(r.get("effects_json"), {})
         p = prices.get(r["code"], {})
         r["price_estimate"] = p.get("estimate")
         r["price_actual"] = p.get("actual")
-        r["price"] = p.get("actual") if p.get("actual") is not None else p.get("estimate")
-        r["price_tier"] = "实价" if p.get("actual") is not None else ("估计价" if p.get("estimate") is not None else "缺")
+        e = eff.get(r["code"])
+        r["price"] = e["price"] if e else None
+        r["price_tier"] = ("缺" if not e else "实价" if e["type"] == "actual" else
+                           ("网查价（实价过期）" if e["why"].startswith("网查价") else "估计价"))
     return rows
 
 
@@ -153,6 +156,45 @@ def current_prices() -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     for r in db.q("SELECT material_code, price_type, price FROM prices WHERE price_type IN ('estimate','actual') ORDER BY id"):
         out.setdefault(r["material_code"], {})[r["price_type"]] = float(r["price"])
+    return out
+
+
+STALE_ACTUAL_DAYS = 21      # 实价（日报/甲方报价）超过 3 周算过期
+FRESH_ESTIMATE_DAYS = 14    # 能顶替过期实价的网查价：两周内的
+
+
+def _as_date(s: Any):
+    import datetime as _dt
+
+    s = str(s or "")
+    for text, fmt in ((s[:10], "%Y-%m-%d"), (s[:7], "%Y-%m")):
+        try:
+            return _dt.datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def effective_prices() -> dict[str, dict[str, Any]]:
+    """每种料实际按哪个价算：实价优先；但实价已过期（报价日超过 3 周）、又有两周内更新的网查/估计价时，用更新的那个。
+    返回 {代码: {price, type, date, source, why}}。"""
+    import datetime as _dt
+
+    latest: dict[str, dict[str, dict[str, Any]]] = {}
+    for r in db.q("SELECT id, material_code, price_type, price, price_date, source FROM prices "
+                  "WHERE price_type IN ('estimate','actual') ORDER BY id"):
+        latest.setdefault(r["material_code"], {})[r["price_type"]] = r
+    today = _dt.date.today()
+    out: dict[str, dict[str, Any]] = {}
+    for code, d in latest.items():
+        a, e = d.get("actual"), d.get("estimate")
+        pick, why = (a, "实价") if a else (e, "估计价")
+        if a and e:
+            ad, ed = _as_date(a["price_date"]), _as_date(e["price_date"])
+            if ad and ed and ed > ad and (today - ad).days > STALE_ACTUAL_DAYS and (today - ed).days <= FRESH_ESTIMATE_DAYS:
+                pick, why = e, f"网查价（实价停在 {ad}，已过 {(today - ad).days} 天，改用 {ed} 的网查价）"
+        out[code] = {"price": float(pick["price"]), "type": pick["price_type"], "date": pick["price_date"] or "",
+                     "source": pick["source"] or "", "why": why}
     return out
 
 

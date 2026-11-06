@@ -55,9 +55,13 @@ def _market_job() -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         summary["forecast_error"] = str(e)[:120]
     try:
-        web = daily_quotes.web_market_quotes(["LLDPE", "LDPE", "HDPE"], depth="快")
+        web = daily_quotes.web_market_quotes(["LLDPE", "LDPE", "HDPE"], depth="标准")
         summary["web"] = {fam: f"{v.get('rows', 0)} 条" + (f"，最低到厂 {v['best']['landed']:.0f}" if v.get("best") else "")
                           for fam, v in (web or {}).items()}
+        applied = daily_quotes.apply_web_market(["LLDPE", "LDPE", "HDPE"])
+        if applied:
+            summary["price_card"] = {a["family"]: f"按网查中位 {a['median']:.0f}（{a['n']} 条，{a['low']:.0f}~{a['high']:.0f}，{a['date']}）"
+                                     for a in applied}
     except Exception as e:  # noqa: BLE001
         summary["web_error"] = str(e)[:120]
     try:

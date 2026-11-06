@@ -300,7 +300,9 @@ WEB_PROMPT = (
     "\"delivery\": \"货物状态（现货/在途/计划/期货…，没有留空）\", \"price\": 数字（元/吨）, \"tax_included\": true/false, "
     "\"seller\": \"报价方：贸易商名或市场名（如 生意社华东/塑料在线-某某塑化），没有留空\", \"date\": \"报价日期 YYYY-MM-DD，页面没写就留空\"}}]}}。"
     "只要人民币元/吨的报价，元/kg 换算；行情站的“市场价/主流价”也算一条（seller 写市场名，delivery 写 市场价）；"
-    "日期尽量从页面上取（更新时间、发布时间），取不到留空。最多 20 条，优先华东（上海/杭州/宁波/江苏/浙江）与价格低的。\n\n网页：{url}\n正文：\n{text}"
+    "日期尽量从页面上取（更新时间、发布时间），取不到留空；今天是 {today}，只写了“11月2日”这种月日的，按今年补全年份（日期在今天之后就算去年）。"
+    "生意社“基准价”、行情站“主流价/均价”也各算一条（seller 写生意社基准价 等，warehouse 写 华东 或 全国）。"
+    "最多 20 条，优先华东（上海/杭州/宁波/江苏/浙江）与价格低的。\n\n网页：{url}\n正文：\n{text}"
 )
 # 默认目标（没有日报时的兜底）：厂家+牌号
 DEFAULT_TARGETS: dict[str, list[tuple[str, str]]] = {
@@ -325,19 +327,23 @@ def seed_targets(family: str) -> list[tuple[str, str]]:
     return out or DEFAULT_TARGETS.get(family, [])
 
 
+# 实测能搜到近一周价格的写法（2026-11）：行情站（生意社/PriceSeek、同花顺转载）的日价、基准价、厂家华东报价。
+# 牌号一定带上类别名：只写“宝来7042”会搜出宝来轿车、RAL 7042 色卡。
+WEB_QUERY_BASE: dict[str, list[str]] = {
+    "LLDPE": ["LLDPE 7042 价格 今日", "生意社 LLDPE基准价", "地区LLDPE 现货价格报", "PriceSeek LLDPE 华东",
+              "聚乙烯 LLDPE 行情 余姚 塑料城"],
+    "LDPE": ["LDPE 2426H 价格 华东", "生意社 LDPE基准价", "地区LDPE 现货价格报", "PriceSeek LDPE 华东"],
+    "HDPE": ["HDPE 薄膜 价格 华东 元/吨", "生意社 HDPE基准价", "PriceSeek HDPE 华东", "地区HDPE 现货价格报"],
+    "mLLDPE": ["茂金属 mLLDPE 价格 华东", "茂金属聚乙烯 1018 价格"],
+}
+
+
 def web_queries(family: str, depth: str = "标准") -> list[str]:
     targets = seed_targets(family)
-    grades = list(dict.fromkeys(g for _, g in targets))
-    fam_cn = {"LLDPE": "线性", "LDPE": "高压", "HDPE": "低压", "mLLDPE": "茂金属"}.get(family, family)
-    qs: list[str] = []
+    qs: list[str] = list(WEB_QUERY_BASE.get(family, []))
     for p, g in targets[:4]:
-        qs.append(f"{p}{g} 报价 华东")
-    for g in grades[:3]:
-        qs.append(f"{g} 杭州 现货 报价")
-        qs.append(f"site:plasway.com {g}")
-    qs.append(f"PE {fam_cn} 华东 市场报价 今日 贸易商")
-    qs.append(f"site:100ppi.com {family}")
-    n = {"快": 3, "标准": 6, "深": 10}.get(depth, 6)
+        qs.append(f"{family} {p} {g} 价格 华东")
+    n = {"快": 4, "标准": 7, "深": 11}.get(depth, 7)
     return list(dict.fromkeys(qs))[:n]
 
 
@@ -357,7 +363,8 @@ def extract_web_quotes(family: str, url: str, text: str, today: _date, page_date
     keys = "、".join(f"{p}{g}" for p, g in seed_targets(family)[:6])
     try:
         data = llm.chat_json([{"role": "system", "content": "你是塑料原料采购助理，输出严格 JSON。"},
-                              {"role": "user", "content": WEB_PROMPT.format(family_cn=FAMILY_CN.get(family, family), keys=keys, url=url, text=text[:8000])}],
+                              {"role": "user", "content": WEB_PROMPT.format(family_cn=FAMILY_CN.get(family, family), keys=keys, url=url,
+                                                                         text=text[:8000], today=today.isoformat())}],
                              max_tokens=4000)
     except Exception as e:  # noqa: BLE001
         sourcing._log(f"网查抽取失败 {url[:60]}：{e}")
@@ -418,7 +425,7 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
                 text = ((h.abstract or "").strip() + "\n\n" + (page.get("text") or "")).strip()
                 if len(text) < 150:
                     continue
-                page_date = page.get("date") or ""
+                page_date = page.get("date") or (h.meta or {}).get("date") or ""     # 页面没写日期就用搜索接口给的发布日期
                 if page_date and not _fresh(page_date, today):
                     stale += 1  # 页面本身超过一周，整页跳过，省一次模型调用
                     continue
@@ -440,6 +447,31 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
     db.insert("sourcing_runs", {"at": db.now(), "codes_json": db.dumps(families), "summary_json": db.dumps({k: {kk: vv for kk, vv in v.items() if kk != "best"} for k, v in summary.items()}),
                                 "note": f"网查同类报价 depth={depth}"})
     return summary
+
+
+def apply_web_market(families: list[str] | None = None, days: int = WEB_MAX_AGE_DAYS) -> list[dict[str, Any]]:
+    """把近一周网查行情（优先华东）的到厂价中位数写成估计价：贸易商日报过期时，算方案就用它（见 materials.effective_prices）。
+    用中位数不用最低：网查最低价常是促销、旧货或抽错。"""
+    out = []
+    for fam in families or ["LLDPE", "LDPE", "HDPE"]:
+        code = _code_for(fam)
+        rows = [r for r in web_rows(fam, days=days, top=500) if 5000 <= float(r["landed_price"] or 0) <= 30000]
+        if not code or not rows:
+            continue
+        east = [r for r in rows if region_rank(r.get("warehouse") or "") <= 1 or "华东" in (r.get("warehouse") or "")] or rows
+        vals = sorted(float(r["landed_price"]) for r in east)
+        med = round(vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2, 0)
+        newest = max(str(r["quote_date"]) for r in east)[:10]
+        cur = MAT.effective_prices().get(code) or {}
+        if cur.get("type") == "estimate" and abs(cur.get("price", 0) - med) < 1 and str(cur.get("date", ""))[:10] == newest:
+            continue
+        who = "、".join(dict.fromkeys(str(r.get("trader") or "")[:16] for r in east))[:80]
+        pricing.record_price(code, med, "estimate", price_date=newest,
+                             source=f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} 近 {days} 天 {len(east)} 条（{who}），含运费到厂",
+                             note="网查行情，未询价核实；有新的贸易商日报会优先用日报")
+        out.append({"family": fam, "code": code, "median": med, "n": len(east), "date": newest,
+                    "low": vals[0], "high": vals[-1]})
+    return out
 
 
 def web_rows(family: str, days: int = WEB_MAX_AGE_DAYS, top: int = 5) -> list[dict[str, Any]]:

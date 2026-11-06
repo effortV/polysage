@@ -81,7 +81,8 @@ def _bocha(query: str, limit: int, timelimit: str | None = None, timeout: float 
         st, cred = _classify(url)
         hits.append(SearchHit(provider="bocha", external_id=url, title=(it.get("name") or "")[:120], source_type=st, url=url,
                               abstract=(it.get("summary") or it.get("snippet") or "")[:500], credibility=cred,
-                              year=_year_of(it.get("datePublished") or it.get("dateLastCrawled") or "")))
+                              year=_year_of(it.get("datePublished") or it.get("dateLastCrawled") or ""),
+                              meta={"date": str(it.get("datePublished") or "")[:10]}))
     if not hits:
         raise RuntimeError("bocha 无结果")
     return hits
