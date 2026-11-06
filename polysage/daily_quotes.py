@@ -468,13 +468,17 @@ def apply_web_market(families: list[str] | None = None, days: int = WEB_MAX_AGE_
         vals = sorted(float(r["landed_price"]) for r in east)
         med = round(vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2, 0)
         newest = max(str(r["quote_date"]) for r in east)[:10]
-        cur = MAT.effective_prices().get(code) or {}
-        if cur.get("type") == "estimate" and abs(cur.get("price", 0) - med) < 1 and str(cur.get("date", ""))[:10] == newest:
-            continue
         who = "、".join(dict.fromkeys(str(r.get("trader") or "")[:16] for r in east))[:80]
-        pricing.record_price(code, med, "estimate", price_date=newest,
-                             source=f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} 近 {days} 天 {len(east)} 条（{who}），含运费到厂",
-                             note="网查行情，未询价核实；有新的贸易商日报会优先用日报")
+        eff = MAT.effective_prices()
+        for c in FAMILY_CODES.get(fam, [code]):                  # 同类所有代码一起（LL / LLC 都是 7042）
+            if not MAT.get_material(c):
+                continue
+            cur = eff.get(c) or {}
+            if cur.get("type") == "estimate" and abs(cur.get("price", 0) - med) < 1 and str(cur.get("date", ""))[:10] == newest:
+                continue
+            pricing.record_price(c, med, "estimate", price_date=newest,
+                                 source=f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} 近 {days} 天 {len(east)} 条（{who}），含运费到厂",
+                                 note="网查行情，未询价核实；有新的贸易商日报会优先用日报")
         out.append({"family": fam, "code": code, "median": med, "n": len(east), "date": newest,
                     "low": vals[0], "high": vals[-1]})
     return out

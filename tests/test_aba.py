@@ -305,3 +305,21 @@ def test_plan_round_new_materials_span_grades(aba_prices):
     assert len(new) == 4 and all("RL" in t["design"].whole() for t in new)
     grades = {t["purpose"].split("，")[0] for t in new}
     assert len(grades) >= 2, grades                                                # 不全挤在一个透光档
+
+
+def test_alternatives_need_fresh_sane_prices(aba_prices):
+    import datetime as _dt
+
+    old = (_dt.date.today() - _dt.timedelta(days=60)).isoformat()
+    MAT.upsert_material({"code": "LLX", "name": "国产 C4 LLDPE 旧价", "category": "主体树脂"})
+    MAT.add_price("LLX", 8000, "actual", source="旧日报（测试）", price_date=old)              # 旧价：不能拿来比
+    MAT.upsert_material({"code": "LDX", "name": "某 LDPE 低得离谱", "category": "主体树脂", "grade": "2426H"})
+    MAT.add_price("LDX", 5000, "actual", source="报价（测试）", price_date=_dt.date.today().isoformat())
+    MAT.add_price("LD", 12500, "actual", source="测试实价", price_date=_dt.date.today().isoformat())
+    out = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True})
+    used = {k for items in out["groups"].get("加新料", {}).values() for ev in items for k in ev["design"].whole()}
+    assert "LLX" not in used and "LDX" not in used
+    note = " ".join(out["notes"])
+    assert "LLX" in note and "天前" in note and "LDX" in note and "低太多" in note
+    db.execute("DELETE FROM prices WHERE material_code IN ('LLX', 'LDX')")
+    db.execute("DELETE FROM materials WHERE code IN ('LLX', 'LDX')")

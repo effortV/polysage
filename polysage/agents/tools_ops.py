@@ -65,7 +65,8 @@ def _market_job() -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         summary["web_error"] = str(e)[:120]
     try:
-        mat = daily_quotes.web_material_quotes(["R1", "FL"], depth="快", pages_per_query=2)
+        mat = daily_quotes.web_material_quotes(["R1", "FL", "RL"], depth="快", pages_per_query=2)
+        daily_quotes.apply_web_estimates(["RL"])          # 没有实价的辅料：网查最低到厂价写成估计价（R1、FL 有甲方实价，不动）
         summary["materials"] = {c: f"{v.get('rows', 0)} 条" + (f"，最低到厂 {v['best']['landed']:.0f}" if v.get("best") else "")
                                 for c, v in (mat or {}).items()}
     except Exception as e:  # noqa: BLE001

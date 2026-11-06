@@ -65,15 +65,50 @@ def _merge(*parts: dict[str, float]) -> dict[str, float]:
     return {k: round(v, 2) for k, v in out.items()}
 
 
-def _usable(ctx: Ctx, exclude: set[str]) -> dict[str, list[str]]:
-    """按角色分组的可用料：有价、没被排除、没标“不用”、买得到；同一角色里按价格从低到高。"""
-    from .. import procurement
+ALT_MAX_AGE_DAYS = 30          # 新料的价格超过一个月没更新，不拿来和现有料比（旧价配新价会算出假的“省”）
+ALT_MIN_RATIO = 0.8            # PE 新料价格低于同类现有料八成：多半抽错或不是同一种东西，先询价
+SAME_FAMILY = {"lldpe": BASE_RESIN, "lldpe_c6": BASE_RESIN, "mlldpe": BASE_RESIN, "ldpe": "LD", "hdpe": HDPE_CODE, "mdpe": HDPE_CODE}
 
+
+def alt_problem(ctx: Ctx, code: str, eff: dict[str, dict[str, Any]] | None = None) -> str:
+    """新料（不是现有四种）不能进方案的原因；能用返回空串。"""
+    from datetime import date as _date
+
+    from ..formulation.materials import _as_date, effective_prices
+
+    if code in CURRENT_CODES:
+        return ""
+    e = (eff if eff is not None else effective_prices()).get(code)
+    if not e:
+        return "没有价格"
+    d = _as_date(e.get("date"))
+    if not d or d > _date.today():
+        return "价格没有可信的日期"
+    age = (_date.today() - d).days
+    if age > ALT_MAX_AGE_DAYS:
+        return f"价格是 {d} 的（{age} 天前）"
+    base = SAME_FAMILY.get(ctx.role.get(code, ""))
+    if base and ctx.prices.get(base) and e["price"] < ALT_MIN_RATIO * ctx.prices[base]:
+        return f"{e['price']:.0f} 元/吨比同类行情 {ctx.prices[base]:.0f} 低太多，可能抽错"
+    return ""
+
+
+def _usable(ctx: Ctx, exclude: set[str], skipped: dict[str, str] | None = None) -> dict[str, list[str]]:
+    """按角色分组的可用料：有价、没被排除、没标“不用”、买得到；新料还要价格新、像样；同一角色里按价格从低到高。"""
+    from .. import procurement
+    from ..formulation.materials import effective_prices
+
+    eff = effective_prices()
     groups: dict[str, list[str]] = {}
     for code, m in ctx.mats.items():
         if code in exclude or not m.get("active", 1) or str(m.get("use_flag") or "").startswith("否"):
             continue
         if code not in ctx.prices or not procurement.is_buyable(code):
+            continue
+        why = alt_problem(ctx, code, eff)
+        if why:
+            if skipped is not None:
+                skipped[code] = why
             continue
         groups.setdefault(ctx.role[code], []).append(code)
     for role in groups:
@@ -164,7 +199,8 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
     ref_eval["drivers"] = []
     notes = list(scen["notes"])
     exclude = set(q.exclude or [])
-    groups = _usable(ctx, exclude)
+    skipped: dict[str, str] = {}
+    groups = _usable(ctx, exclude, skipped)
     missing = [c for c in CURRENT_CODES if c not in ctx.prices]
     if missing:
         notes.append(f"现有料里 {'、'.join(missing)} 没有价格，含它的方案算不出成本。")
@@ -264,6 +300,10 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
                 uncertain[g] = ev
                 notes.append(f"透光≥{R.GRADE_LABEL[g]}：按现有实验数据还没有八成把握做到；点估计最省的是 {ev['text']}，"
                              f"{ev['cost']:.0f} 元/吨（{saving_text(ev.get('saving_pct'))}）——建议试一组确认。")
+    if q.use_new and skipped:
+        notes.append("这些料没进“加新料”（要用先查价/询价）：" + "；".join(f"{c} {ctx.mats.get(c, {}).get('name', '')}：{w}"
+                                                              for c, w in list(skipped.items())[:8])
+                     + (f" 等 {len(skipped)} 种" if len(skipped) > 8 else "") + "。")
     notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度。"
                  "填充多、厚度大的方案每吨便宜但每平方米用料多——“元/m²(参考)”一栏给出同一张膜的料钱，"
                  "客户按面积买或厚度有规格时请把厚度固定再算。")
