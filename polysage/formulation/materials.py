@@ -70,13 +70,14 @@ def seed_materials(overwrite: bool = False) -> int:
             n += 1
         if price is None:                      # 没有可追溯的价就不写，等日报 / 网查 / 询价给
             continue
-        cur = db.q1("SELECT price, source FROM prices WHERE material_code=? AND price_type='estimate' ORDER BY id DESC", (m["code"],))
-        if cur is None:
+        # 每个页面打开都会调这里：种子价（甲方口述）只写一次。以前“最新一条不是它就再写一遍”，
+        # 会把后来网查到的新行情压在一条 2026-09 的旧价下面（LLDPE 又变回 12000 / 9 月日报价）
+        cur = db.q1("SELECT 1 FROM prices WHERE material_code=? AND price_type='estimate'", (m["code"],))
+        seen = db.q1("SELECT 1 FROM prices WHERE material_code=? AND price_type='estimate' AND price=? AND source=?",
+                     (m["code"], price, price_note or PRICE_NOTE))
+        if cur is None or (price_note and "甲方口述" in price_note and not seen):
             db.insert("prices", {"material_code": m["code"], "price_type": "estimate", "price": price, "unit": "元/吨",
                                  "price_date": "2026-09", "source": price_note or PRICE_NOTE, "created_at": db.now()})
-        elif price_note and "甲方口述" in price_note and (cur["price"] != price or "甲方口述" not in (cur["source"] or "")):
-            db.insert("prices", {"material_code": m["code"], "price_type": "estimate", "price": price, "unit": "元/吨",
-                                 "price_date": "2026-09", "source": price_note, "created_at": db.now()})
     export_price_card()
     return n
 
@@ -181,16 +182,21 @@ def effective_prices() -> dict[str, dict[str, Any]]:
     import datetime as _dt
 
     latest: dict[str, dict[str, dict[str, Any]]] = {}
+    freshest: dict[str, tuple[Any, dict[str, Any]]] = {}       # 报价日期最新的估计价（后写进来的不一定日期新）
+    today = _dt.date.today()
     for r in db.q("SELECT id, material_code, price_type, price, price_date, source FROM prices "
                   "WHERE price_type IN ('estimate','actual') ORDER BY id"):
         latest.setdefault(r["material_code"], {})[r["price_type"]] = r
-    today = _dt.date.today()
+        d_ = _as_date(r["price_date"]) if r["price_type"] == "estimate" else None
+        if d_ and d_ <= today and d_ >= freshest.get(r["material_code"], (d_, None))[0]:
+            freshest[r["material_code"]] = (d_, r)
     out: dict[str, dict[str, Any]] = {}
     for code, d in latest.items():
         a, e = d.get("actual"), d.get("estimate")
         pick, why = (a, "实价") if a else (e, "估计价")
-        if a and e:
-            ad, ed = _as_date(a["price_date"]), _as_date(e["price_date"])
+        if a and code in freshest:
+            e = freshest[code][1]
+            ad, ed = _as_date(a["price_date"]), freshest[code][0]
             if ad and ed and ed > ad and (today - ad).days > STALE_ACTUAL_DAYS and (today - ed).days <= FRESH_ESTIMATE_DAYS:
                 pick, why = e, f"网查价（实价停在 {ad}，已过 {(today - ad).days} 天，改用 {ed} 的网查价）"
         out[code] = {"price": float(pick["price"]), "type": pick["price_type"], "date": pick["price_date"] or "",

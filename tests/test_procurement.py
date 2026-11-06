@@ -234,3 +234,24 @@ def test_stale_actual_uses_same_price_everywhere(home):
     assert s["tier"] == "web" and s["price"] == 9510 and "未询价" in s["supplier"] and P.is_buyable("HD")
     assert forecast._current_price("HDPE") == 9510 == MAT.effective_price("HD")
     db.execute("DELETE FROM prices WHERE material_code='HD' AND source IN ('旧日报', '网查行情中位：测试')")
+
+
+def test_seed_does_not_bury_fresh_market_price(home):
+    """打开页面会调 seed_materials：不能再把“甲方口述价（2026-09）”写在新行情上面，让 LLDPE 退回 9 月的价。"""
+    import datetime as _dt
+
+    MAT.seed_materials()
+    _clear_actuals("LL")
+    top = db.q1("SELECT MAX(id) m FROM prices")["m"] or 0
+    today = _dt.date.today()
+    MAT.add_price("LL", 9670, "actual", source="贸易商日报（旧）", price_date=(today - _dt.timedelta(days=47)).isoformat())
+    MAT.add_price("LL", 9780, "estimate", source="网查行情中位：华东市场价", price_date=(today - _dt.timedelta(days=5)).isoformat())
+    n0 = len(MAT.price_history("LL"))
+    MAT.seed_materials()
+    MAT.seed_materials()
+    assert len(MAT.price_history("LL")) == n0                                   # 种子价已经写过，不再写
+    assert MAT.effective_prices()["LL"]["price"] == 9780
+    # 就算后面又有一条日期更旧的估计价写进来，过期实价也换成日期最新的网查价
+    MAT.add_price("LL", 12000, "estimate", source="甲方口述价（2026-09）", price_date="2026-09")
+    assert MAT.effective_prices()["LL"]["price"] == 9780
+    db.execute("DELETE FROM prices WHERE id > ?", (top,))
