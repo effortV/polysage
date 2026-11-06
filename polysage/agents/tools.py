@@ -499,6 +499,9 @@ def explain_scheme(rank: int):
                                        "effects", "expected", "risks", "risk_level", "pass_confidence", "evidence", "ml")}), []
 
 
+WEB_PRICE_WORDS = ("网查", "未核实", "未电话", "网上", "参考价", "网页")
+
+
 @tool("add_price", "为材料登记价格并触发联动（全部配方成本重算、重排、写价格变动报告）：estimate=网查估计价（必须给来源与日期），actual=甲方实价。",
       {"code": {"type": "string"}, "price": {"type": "number"}, "price_type": {"type": "string", "enum": ["estimate", "actual"]},
        "source": {"type": "string"}, "url": {"type": "string"}, "price_date": {"type": "string"}, "supplier": {"type": "string"},
@@ -506,8 +509,11 @@ def explain_scheme(rank: int):
 def add_price(code: str, price: float, price_type: str, source: str, url: str = "", price_date: str = "", supplier: str = "", note: str = ""):
     from .. import pricing
 
+    demoted = ""
+    if price_type == "actual" and any(w in f"{source} {note}" for w in WEB_PRICE_WORDS):
+        price_type, demoted = "estimate", "（来源是网查/未核实，按估计价登记；实价只登记甲方实际进价或贸易商正式报价）"
     res = pricing.record_price(code, price, price_type, source=source, url=url, price_date=price_date, supplier=supplier, note=note)
-    return (f"已登记 {code} {price_type} 价 {price} 元/吨；现配方成本 {pricing.cost_text(res['base_cost'])}；{res['n_flagged']} 个配方成本/排名明显变化；"
+    return (f"已登记 {code} {price_type} 价{demoted} {price} 元/吨；现配方成本 {pricing.cost_text(res['base_cost'])}；{res['n_flagged']} 个配方成本/排名明显变化；"
             f"最便宜前 3：{[(t['code'], round(t['cost'])) for t in res['top5'][:3]]}；报告 {pricing.REPORT_PATH.name}"), []
 
 

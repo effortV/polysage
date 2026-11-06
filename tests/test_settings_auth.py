@@ -77,3 +77,21 @@ def test_orchestration_tools_registered():
         assert name in T._REGISTRY and name in adv.tools
     text, _ = T.run("background_status", {})
     assert "后台" in text
+
+
+def test_web_price_cannot_be_actual(monkeypatch):
+    from polysage.agents import tools as T
+
+    seen = {}
+
+    def fake_record(code, price, price_type, **kw):
+        seen["type"] = price_type
+        return {"base_cost": None, "n_flagged": 0, "top5": []}
+
+    from polysage import pricing
+
+    monkeypatch.setattr(pricing, "record_price", fake_record)
+    text, _ = T.run("add_price", {"code": "RL", "price": 5150, "price_type": "actual", "source": "网查·东莞某经营部，未电话询价核实"})
+    assert seen["type"] == "estimate" and "按估计价登记" in text
+    T.run("add_price", {"code": "R1", "price": 8250, "price_type": "actual", "source": "甲方口述实际进价"})
+    assert seen["type"] == "actual"
