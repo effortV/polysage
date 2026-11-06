@@ -21,7 +21,7 @@ def _req(v: Any) -> float | None:
 
 @tool("aba_optimize",
       "ABA 三层膜分档寻优：在给定的料里，按透光三档（0 一般/1 好/2 很好）分别找元/吨最低、纵横拉断力满足要求的方案"
-      "（自动调 B 层填充、B 层 HDPE、再生比例、A 层占比、厚度），并给出“只用现有料”和“加/换新料”两组。结果自动入配方库并导出表格。",
+      "（自动调 B 层填充、B 层 HDPE、再生比例、A 层占比、厚度），并给出“只用现有料”和“加/换新料”两组。结果自动入配方库并导出 Word。",
       {"md_req": {"type": "number", "description": "纵向拉断力至少是现配方的几倍：1 = 不降，1.1 = 提升 10%，0.95 = 允许降 5%，0 = 不管"},
        "td_req": {"type": "number", "description": "横向拉断力，含义同上"},
        "grade_min": {"type": "integer", "description": "透光至少几档：0/1/2；传 -1（默认）= 三档分别给出最低成本方案"},
@@ -44,7 +44,7 @@ def aba_optimize(md_req: float = 1.0, td_req: float = 1.0, grade_min: int = -1, 
                 scenario=scenario or "current", custom_pct=float(custom_pct or 0), use_new=bool(use_new))
     out = O.run(q)
     text = O.to_text(out)
-    path = RP.export_xlsx(out)
+    path = RP.export_docx(out)                    # 成文输出一律 Word
     codes = RP.save_to_library(out, origin="对话·分档")
     best = None
     for g in sorted((out["groups"].get("现有料") or {}), reverse=False):
@@ -52,9 +52,12 @@ def aba_optimize(md_req: float = 1.0, td_req: float = 1.0, grade_min: int = -1, 
         if items:
             best = items[0]
             break
-    extra = [f"导出：{path.name}（知识库 05_配方库）", f"已入配方库：{'、'.join(codes) or '无'}"]
+    extra = [f"导出 Word：05_配方库/{path.name}（回答里写上这个文件名，用户就能直接下载）", f"已入配方库：{'、'.join(codes) or '无'}"]
     if best:
         extra.append(procurement.text(RP.procurement_for(best)))
+        if out["scenario"]["name"] != "current":
+            extra.append(f"注意：上面的进货清单按价格卡上的到厂价合计；按“{out['scenario']['label']}”算，这个方案是 {best['cost']:.0f} 元/吨。"
+                         "回答里两个数都要说清是哪个价格口径，别混在一起。")
     return text + "\n\n" + "\n".join(extra), []
 
 

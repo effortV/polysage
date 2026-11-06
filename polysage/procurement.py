@@ -238,3 +238,28 @@ def sourcing_note(components: dict[str, float]) -> str:
         tag = {"actual": "实价", "daily": "日报", "web": "网查", "estimate": "估计价", "none": "无"}[s["tier"]]
         parts.append(f"{code} {price}（{tag}{'·' + who if who else ''}）")
     return "；".join(parts)
+
+
+def export_docx(p: dict[str, Any], path: Path | None = None) -> Path:
+    """采购清单 → Word：每种料买谁家、到厂价、用量与小计，以及备选报价。"""
+    from . import wordout as W
+
+    path = path or RFQ_PATH.with_suffix(".docx")
+    doc = W.new_doc("采购清单", f"{p['name']}　·　按 {p['tons']:g} 吨成品", landscape=True)
+    W.add_table(doc, [{"代码": it["code"], "材料": it["name"], "比例%": it["pct"], "用量(吨)": it["qty_t"],
+                       "到厂价(元/吨)": it["price"], "价格来源": TIER_LABEL.get(it["tier"], it["tier"]),
+                       "供应商": it["supplier"] or "待询价", "牌号/规格": it["grade"], "仓库地": it["region"], "交期": it["delivery"],
+                       "联系方式": it["contact"], "报价日期": it["date"], "小计(元)": it["subtotal"]} for it in p["items"]],
+                font_size=8)
+    total = p.get("total")
+    W.para(doc, f"**合计**：{total:,.0f} 元" if total else "**合计**：有料缺价，算不出合计。")
+    if p.get("missing"):
+        W.para(doc, "**缺价、要先询价的**：" + "、".join(p["missing"]))
+    alts = [{"代码": it["code"], "材料": it["name"], "备选": i, "供应商": a["supplier"], "牌号/规格": a["grade"],
+             "到厂价": round(a["price"]), "地区": a["region"], "交期": a["delivery"], "联系方式": a["contact"],
+             "报价日期": a["date"]} for it in p["items"] for i, a in enumerate(it["alternatives"], 1)]
+    if alts:
+        doc.add_heading("备选报价", level=1)
+        W.add_table(doc, alts, font_size=8)
+    W.note(doc, "网查报价只作参考，下单前电话确认价格、货源和外观；价格来源一栏标明了是实价、贸易商日报还是网查。")
+    return W.save(doc, path)

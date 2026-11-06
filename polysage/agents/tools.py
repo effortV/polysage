@@ -385,7 +385,7 @@ def price_outlook(refresh: bool = False):
     return text, []
 
 
-@tool("procurement_plan", "给出某个方案/配方的采购方案：每种料（含再生料、助剂、母料）买谁家、到厂价多少、联系方式、用量与小计，并导出采购清单 xlsx。",
+@tool("procurement_plan", "给出某个方案/配方的采购方案：每种料（含再生料、助剂、母料）买谁家、到厂价多少、联系方式、用量与小计，并导出采购清单 Word。",
       {"rank": {"type": "integer", "description": "最近一次推荐里的方案排名，默认 1"},
        "formulation_code": {"type": "string", "description": "或配方库编号，如 A03、G01"},
        "components": {"type": "object", "additionalProperties": {"type": "number"}, "description": "或直接给组分，如 {\"LL\": 35, \"R1\": 44, \"RL\": 20, \"AD\": 1}"},
@@ -402,8 +402,9 @@ def procurement_plan(rank: int = 1, formulation_code: str = "", components: dict
         p = procurement.plan_for_scheme(rank, tons)
     if not p:
         return "没有找到对应的方案/配方（先 recommend_schemes 或给 components）。", []
-    path = procurement.export(p, KB["price"] / "采购清单.xlsx")
-    return procurement.text(p) + f"\n采购清单已导出：{path}", []
+    procurement.export(p, KB["price"] / "采购清单.xlsx")
+    path = procurement.export_docx(p, KB["price"] / "采购清单.docx")
+    return procurement.text(p) + f"\n采购清单（Word）已导出：04_价格卡/{path.name}", []
 
 
 @tool("find_material_suppliers", "为再生料 / 助剂 / 母料等辅料按材料代码网查厂商与报价（R1、RL、R2、AD、POE、EVA、FL 等），入库后返回最低几家；可选把最低价写成估计价。",

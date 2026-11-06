@@ -52,6 +52,11 @@ def test_best_source_priority_and_plan(monkeypatch, home):
     assert "台州某某再生" in txt and "139-xxxx" in txt and "元/吨" in txt
     path = P.export(plan, home / "采购清单_test.xlsx")
     assert path.exists() and path.stat().st_size > 2000
+    doc_path = P.export_docx(plan, home / "采购清单_test.docx")
+    from docx import Document
+
+    d = Document(str(doc_path))
+    assert d.tables[0].rows[0].cells[0].text == "代码" and any("台州某某再生" in c.text for r in d.tables[0].rows for c in r.cells)
 
 
 def test_missing_price_is_flagged(monkeypatch, home):

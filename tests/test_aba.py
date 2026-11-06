@@ -21,6 +21,9 @@ PRICES = {"LL": 9670, "R1": 8250, "FL": 2500, "HD": 9300}
 def aba_prices(home):
     """每个用例开头把现配方四种料的价格钉死（实价，最新一条生效），不受别的测试影响。"""
     MAT.seed_materials()
+    marks = ",".join("?" for _ in PRICES)
+    others = db.q(f"SELECT * FROM prices WHERE material_code NOT IN ({marks})", tuple(PRICES))   # 别的用例留下的价格先挪开
+    db.execute(f"DELETE FROM prices WHERE material_code NOT IN ({marks})", tuple(PRICES))
     for code, p in PRICES.items():
         MAT.add_price(code, p, "actual", source="测试实价", price_date="2026-09-21")
     if R.CAL_PATH.exists():
@@ -32,6 +35,9 @@ def aba_prices(home):
     # 测试库是整轮共享的：把这里登记的实价和试验撤掉，别影响后面按估计价算的老用例
     db.execute("DELETE FROM prices WHERE source='测试实价'")
     db.execute("DELETE FROM aba_trials")
+    for row in others:                                                           # 挪开的价格放回去
+        if not db.q1("SELECT 1 FROM prices WHERE id=?", (row["id"],)):
+            db.insert("prices", row)
 
 
 def test_cost_layers_and_density(aba_prices):
