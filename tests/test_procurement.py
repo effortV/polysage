@@ -251,7 +251,8 @@ def test_seed_does_not_bury_fresh_market_price(home):
     MAT.seed_materials()
     assert len(MAT.price_history("LL")) == n0                                   # 种子价已经写过，不再写
     assert MAT.effective_prices()["LL"]["price"] == 9780
-    # 就算后面又有一条日期更旧的估计价写进来，过期实价也换成日期最新的网查价
-    MAT.add_price("LL", 12000, "estimate", source="甲方口述价（2026-09）", price_date="2026-09")
+    # 网查行情换了口径（厂家挂牌 11-05 → 华东市场价 11-02）：后写进来的那条算数，不按日期挑
+    MAT.add_price("LL", 10800, "estimate", source="网查行情中位：厂家挂牌（旧口径）", price_date=(today - _dt.timedelta(days=2)).isoformat())
+    MAT.add_price("LL", 9780, "estimate", source="网查行情中位：华东市场价", price_date=(today - _dt.timedelta(days=5)).isoformat())
     assert MAT.effective_prices()["LL"]["price"] == 9780
     db.execute("DELETE FROM prices WHERE id > ?", (top,))
