@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from .. import db, llm
+from .. import db, embedsig, llm
 from ..config import UPLOAD_DIR
 from ..sources.base import SearchHit, normalize_doi
 from .chunker import chunk_text
@@ -26,7 +26,8 @@ def _title_key(title: str) -> str:
 
 def _store_chunks(source_id: int, text: str, do_embed: bool = True) -> int:
     chunks = chunk_text(text) if text else []
-    vecs = llm.embed(chunks) if (do_embed and chunks) else None
+    # 换了嵌入模型还没重建索引时先不建向量，免得新旧向量混在一起；重建时会一起补上
+    vecs = llm.embed(chunks) if (do_embed and chunks and embedsig.matches()) else None
     with db.tx() as conn:
         conn.execute("DELETE FROM chunks WHERE source_id=?", (source_id,))
         for i, c in enumerate(chunks):
@@ -34,6 +35,8 @@ def _store_chunks(source_id: int, text: str, do_embed: bool = True) -> int:
             conn.execute("INSERT INTO chunks (source_id, ord, text, embedding, n_chars) VALUES (?,?,?,?,?)",
                          (source_id, i, c, emb, len(c)))
         conn.execute("UPDATE sources SET n_chunks=? WHERE id=?", (len(chunks), source_id))
+    if vecs is not None:
+        embedsig.mark()
     return len(chunks)
 
 
@@ -200,7 +203,12 @@ def ingest_url(url: str, *, source_type: str = "web", credibility: int = 5, titl
 
 
 def embed_missing(batch: int = 64) -> int:
-    """为尚无向量的切片补建向量（配置密钥后调用）。返回处理数量。"""
+    """为尚无向量的切片补建向量（配置好向量检索后调用）。返回处理数量。
+
+    现有向量和当前嵌入模型对不上时不补（会混），要用 rebuild_vectors 全部重建。
+    """
+    if not embedsig.matches():
+        return 0
     rows = db.q("SELECT id, text FROM chunks WHERE embedding IS NULL ORDER BY id")
     if not rows:
         return 0
@@ -213,8 +221,28 @@ def embed_missing(batch: int = 64) -> int:
         with db.tx() as conn:
             for r, v in zip(part, vecs):
                 conn.execute("UPDATE chunks SET embedding=? WHERE id=?", (v.astype(np.float32).tobytes(), r["id"]))
+        embedsig.mark()
         done += len(part)
     return done
+
+
+def rebuild_vectors() -> dict[str, Any]:
+    """换嵌入模型后：先试一句确认新服务能用，再清掉全部旧向量、用当前模型重建。中途断了再点“补建”能接着做。"""
+    from ..config import settings
+    from ..rag import index as rag_index
+
+    if not settings.embed_ready:
+        raise RuntimeError("向量检索还没配好（地址、密钥、嵌入模型）")
+    probe = llm.embed(["测试"])
+    if probe is None or not len(probe):
+        raise RuntimeError("新的向量检索服务没有返回向量")
+    db.execute("UPDATE chunks SET embedding=NULL")
+    embedsig.mark()
+    rag_index.invalidate()
+    n = embed_missing()
+    rag_index.invalidate()
+    left = (db.q1("SELECT COUNT(*) c FROM chunks WHERE embedding IS NULL") or {}).get("c", 0)
+    return {"rebuilt": n, "left": int(left), "model": settings.embed_model, "dim": int(probe.shape[1])}
 
 
 def delete_source(source_id: int) -> None:

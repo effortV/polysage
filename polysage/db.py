@@ -282,6 +282,13 @@ CREATE TABLE IF NOT EXISTS aba_trials (
     created_at TEXT NOT NULL,
     measured_at TEXT
 );
+
+-- 零散的系统状态（如：知识库现有向量是用哪个嵌入模型建的）
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT
+);
 """
 
 # 旧库升级：materials 表新增列（幂等）

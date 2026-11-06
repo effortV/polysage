@@ -187,7 +187,11 @@ def _isolated_config(monkeypatch):
     monkeypatch.setattr(providers, "_path", lambda: path)
     providers.save({"providers": [{"id": "siliconflow", "name": "硅基流动", "base_url": "https://api.siliconflow.cn/v1",
                                    "api_key": "", "model": "deepseek-ai/DeepSeek-V4-Pro", "thinking": "enable_thinking"}],
-                    "active": "siliconflow"})
+                    "active": "siliconflow",
+                    "embed_providers": [{"id": "siliconflow", "name": "硅基流动", "base_url": "https://api.siliconflow.cn/v1",
+                                         "api_key": "", "embed_model": "BAAI/bge-m3",
+                                         "rerank_model": "BAAI/bge-reranker-v2-m3", "batch": 32}],
+                    "embed_active": "siliconflow"})
     monkeypatch.setattr(settings, "llm_profile", "siliconflow")
 
 

@@ -1,4 +1,4 @@
-"""硅基流动（SiliconFlow）OpenAI 兼容客户端：对话 / 函数调用 / 向量 / 重排。
+"""OpenAI 兼容客户端：对话 / 函数调用（当前对话模型）、向量 / 重排（当前向量检索服务），都在设置页配。
 
 - 对话模型默认 deepseek-ai/DeepSeek-V4-Pro（可在 .env 修改）。
 - DeepSeek-V4-Pro 默认带“思考”（reasoning）：一个小请求也要 60～80 s、数千 token。
@@ -38,17 +38,17 @@ class ChatResult:
 
 
 def _headers(kind: str = "chat") -> dict[str, str]:
-    """kind: chat → 当前对话模型（按 LLM_PROFILE）；embed → 固定 SiliconFlow。"""
-    key = settings.chat_api_key if kind == "chat" else settings.sf_api_key
+    """kind: chat → 当前对话模型（按 LLM_PROFILE）；embed → 当前向量检索服务（设置页“检索与数据源”）。"""
+    key = settings.chat_api_key if kind == "chat" else settings.embed_api_key
     if not key:
         if kind == "chat":
             raise LLMNotConfigured(f"当前对话模型 {settings.chat_provider_name} · {settings.chat_model} 没有填密钥，请在“设置”页填写。")
-        raise LLMNotConfigured("未配置 SILICONFLOW_API_KEY（向量/重排需要）。")
+        raise LLMNotConfigured(f"向量检索 {settings.embed_name} 没有填密钥，请在“设置 → 检索与数据源”里填写。")
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
 def _base_url(kind: str = "chat") -> str:
-    return (settings.chat_base_url if kind == "chat" else settings.sf_base_url).rstrip("/")
+    return (settings.chat_base_url if kind == "chat" else settings.embed_base_url).rstrip("/")
 
 
 def _thinking_payload(thinking: bool | int | None) -> dict[str, Any]:
@@ -180,7 +180,7 @@ def _post_raw(path: str, payload: dict[str, Any], timeout: float, retries: int, 
                 time.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"{settings.chat_provider_name if kind == 'chat' else '硅基流动（向量）'} {r.status_code}: {r.text[:500]}")
+                raise LLMError(f"{settings.chat_provider_name if kind == 'chat' else settings.embed_name + '（向量）'} {r.status_code}: {r.text[:500]}")
             return r.json()
         except _NET_ERRORS as e:
             # 超时 / 断连 / SSL EOF / 代理掐断：退避重试
@@ -323,7 +323,7 @@ def chat_stream(messages: list[dict[str, Any]], *, temperature: float = 0.3, max
     with activity.track("llm", payload["model"]), net.client(url, timeout=180.0) as client:
         with client.stream("POST", url, headers=_headers("chat"), json=payload) as r:
             if r.status_code >= 400:
-                raise LLMError(f"SiliconFlow {r.status_code}: {r.read()[:500]!r}")
+                raise LLMError(f"{settings.chat_provider_name} {r.status_code}: {r.read()[:500]!r}")
             for line in r.iter_lines():
                 if not line or not line.startswith("data:"):
                     continue
@@ -395,15 +395,19 @@ def parse_json_loose(text: str) -> Any:
     raise LLMError("模型返回了空内容（多为思考占满 max_tokens 或服务超时）" if not text else f"模型未返回可解析的 JSON：{text[:200]}")
 
 
-def embed(texts: list[str], batch: int = 32) -> np.ndarray | None:
-    """返回 (n, d) float32；未配置密钥返回 None。"""
-    if not settings.sf_api_key or not texts:
+def embed(texts: list[str], batch: int | None = None) -> np.ndarray | None:
+    """返回 (n, d) float32；向量检索没配好返回 None。每批条数按服务商设置（百炼一次最多 10 条）。"""
+    if not settings.embed_ready or not texts:
         return None
+    batch = batch or settings.embed_batch
+    model = settings.embed_model
     vecs: list[list[float]] = []
     for i in range(0, len(texts), batch):
         part = [t[:6000] for t in texts[i:i + batch]]
-        data = _post("/embeddings", {"model": settings.sf_embedding_model, "input": part, "encoding_format": "float"}, kind="embed")
+        data = _post("/embeddings", {"model": model, "input": part, "encoding_format": "float"}, kind="embed")
         items = sorted(data.get("data") or [], key=lambda x: x.get("index", 0))
+        if len(items) != len(part):
+            raise LLMError(f"{settings.embed_name} 返回的向量条数不对（发 {len(part)} 条，回 {len(items)} 条）")
         vecs.extend(it["embedding"] for it in items)
     arr = np.asarray(vecs, dtype=np.float32)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
@@ -412,10 +416,10 @@ def embed(texts: list[str], batch: int = 32) -> np.ndarray | None:
 
 
 def rerank(query: str, docs: list[str], top_n: int | None = None) -> list[tuple[int, float]] | None:
-    """返回 [(doc_index, score)] 按分数降序；未配置密钥返回 None。"""
-    if not settings.sf_api_key or not docs:
+    """返回 [(doc_index, score)] 按分数降序；没配重排模型或密钥返回 None（只用混合检索的顺序）。"""
+    if not settings.embed_ready or not settings.rerank_model or not docs:
         return None
-    payload = {"model": settings.sf_rerank_model, "query": query, "documents": [d[:4000] for d in docs],
+    payload = {"model": settings.rerank_model, "query": query, "documents": [d[:4000] for d in docs],
                "top_n": top_n or len(docs), "return_documents": False}
     try:
         data = _post("/rerank", payload, timeout=60.0, retries=2, kind="embed")
@@ -423,6 +427,36 @@ def rerank(query: str, docs: list[str], top_n: int | None = None) -> list[tuple[
         return None
     results = data.get("results") or []
     return [(int(r["index"]), float(r.get("relevance_score", 0.0))) for r in results]
+
+
+def embed_ping(p: dict[str, Any]) -> tuple[bool, str]:
+    """设置页“测试”向量检索服务：试嵌入两句（看维度），配了重排就再试一次重排。不改当前设置。"""
+    from .providers import effective_key
+
+    key, url = effective_key(p), (p.get("base_url") or "").rstrip("/")
+    if not key or not url or not p.get("embed_model"):
+        return False, "地址、密钥、嵌入模型要填全。"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    try:
+        with net.client(url, timeout=30.0) as client:
+            r = client.post(url + "/embeddings", headers=headers,
+                            json={"model": p["embed_model"], "input": ["LLDPE 薄膜", "再生料"], "encoding_format": "float"})
+            if r.status_code != 200:
+                return False, f"嵌入失败 {r.status_code}：{r.text[:300]}"
+            dim = len((r.json().get("data") or [{}])[0].get("embedding") or [])
+            if not dim:
+                return False, "嵌入接口通了，但没返回向量，检查模型名。"
+            msg = f"嵌入可用：{p['embed_model']}，{dim} 维"
+            if p.get("rerank_model"):
+                r = client.post(url + "/rerank", headers=headers,
+                                json={"model": p["rerank_model"], "query": "薄膜", "documents": ["LLDPE 薄膜", "钢材"], "top_n": 2})
+                ok = r.status_code == 200 and bool(r.json().get("results"))
+                msg += f"；重排{'可用' if ok else '不可用（' + str(r.status_code) + '），会只用混合检索不重排'}"
+            else:
+                msg += "；没配重排模型（只用混合检索，不重排）"
+            return True, msg
+    except Exception as e:  # noqa: BLE001
+        return False, f"连接失败：{e}"
 
 
 def ping() -> tuple[bool, str]:

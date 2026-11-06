@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import streamlit as st
 
-from polysage import auth, llm, providers, ui
+from polysage import auth, embedsig, jobs, llm, providers, ui
 from polysage.config import settings
 from polysage.envfile import set_env
+from polysage.ingest import embed_missing, rebuild_vectors
 from polysage.pipeline import task
+from polysage.rag import index as rag_index
 from polysage.sources import elsevier
 
-ui.page_header("设置", "对话模型随便换（填地址、密钥、模型即可）、检索接口、访问密码、任务书。")
+jobs.JOB_NAMES.setdefault("embed_rebuild", "重建向量索引")
+
+ui.page_header("设置", "对话模型、向量检索都能随便换（填地址、密钥、模型即可）；还有搜索接口、访问密码、任务书。")
 
 with st.container(horizontal=True):
     for name, ok in settings.status().items():
@@ -103,15 +107,151 @@ def _render_llm() -> None:
         _provider_form(None, "new")
 
 
+def _embed_form(p: dict | None, key: str) -> None:
+    """新增或编辑一家向量检索服务。新增时可以从常用的里选一个，自动填好地址和模型。"""
+    preset = {}
+    if p is None:
+        names = [x["name"] for x in providers.EMBED_PRESETS]
+        pick = st.selectbox("从常用的选（会自动填好地址和模型）", names, key=f"{key}_preset")
+        preset = next(x for x in providers.EMBED_PRESETS if x["name"] == pick)
+    base = p or preset
+    with st.form(f"{key}_form", border=False):
+        c1, c2 = st.columns(2)
+        name = c1.text_input("名称", base.get("name", ""), placeholder="比如：硅基流动、公司内网向量服务")
+        url = c2.text_input("接口地址（OpenAI 兼容，一般以 /v1 结尾）", base.get("base_url", ""), placeholder="https://…/v1")
+        c1, c2 = st.columns(2)
+        emb = c1.text_input("嵌入模型", base.get("embed_model", ""), placeholder="比如：BAAI/bge-m3")
+        rr = c2.text_input("重排模型（可空）", base.get("rerank_model", ""), placeholder="比如：BAAI/bge-reranker-v2-m3",
+                           help="走 /rerank 接口（硅基流动、Jina 的格式）。没有就留空：按关键词 + 向量混合排序，不再精排。")
+        c1, c2 = st.columns([3, 1])
+        ph = "sk-…"
+        if p:
+            k = providers.effective_key(p)
+            ph = ("已填 " + providers.masked(k) + "，留空不改") if k else "未填"
+        api_key = c1.text_input("密钥", type="password", placeholder=ph,
+                                help="硅基流动的密钥和对话模型那边共用，填一边就行。")
+        batch = c2.number_input("每次发几段", 1, 256, int(base.get("batch") or 16),
+                                help="一次请求最多嵌入几段文字。阿里云百炼最多 10；不确定就填 10。")
+        if st.form_submit_button("保存", type="primary", icon=":material/save:"):
+            if not providers.slug_ok(url) or not emb.strip():
+                st.error("接口地址和嵌入模型都要填，地址以 http(s):// 开头。")
+            elif p is None and not api_key.strip() and "siliconflow" not in url:
+                st.error("新加的服务要填密钥。")
+            else:
+                pid = providers.embed_upsert({"id": (p or {}).get("id"), "name": name, "base_url": url, "embed_model": emb,
+                                              "rerank_model": rr, "api_key": api_key, "batch": batch})
+                if p and p["id"] == providers.load().get("embed_active"):
+                    rag_index.invalidate()
+                st.toast(f"已保存：{name or pid}", icon=":material/check:")
+                st.rerun()
+
+
+def _start_rebuild() -> None:
+    if jobs.start("embed_rebuild", rebuild_vectors):
+        st.toast("已在后台开始重建向量索引", icon=":material/autorenew:")
+    else:
+        run = jobs.info() or {}
+        st.warning(f"后台正在跑「{jobs.JOB_NAMES.get(run.get('name'), run.get('name'))}」，等它跑完再重建。")
+
+
+def _index_status() -> None:
+    s = embedsig.state()
+    run = jobs.info()
+    rebuilding = bool(run and run["name"] == "embed_rebuild")
+    res = jobs.result("embed_rebuild")
+    with st.container(border=True):
+        st.markdown("**知识库向量索引**")
+        if rebuilding:
+            st.info(f"正在用 {settings.embed_model} 重建向量：已完成 {s['embedded']} / {s['chunks']} 段"
+                    f"（{run['elapsed'] / 60:.0f} 分钟）。这期间检索照常可用，刷新页面看进度。", icon=":material/autorenew:")
+        elif s["chunks"] == 0:
+            st.caption("知识库里还没有资料。以后入库的资料会自动用当前嵌入模型建向量。")
+        elif not s["matches"]:
+            st.warning(f"现有 {s['embedded']} 段向量是用 **{s['stored']}** 建的，和当前的 **{s['current']}** 对不上。"
+                       "语义搜索已暂停（只按关键词搜），新入库的资料也先不建向量。点下面「重建向量索引」换成新模型。",
+                       icon=":material/warning:")
+        else:
+            st.caption(f"{s['embedded']} / {s['chunks']} 段已建向量（{s['stored'] or s['current']}）。"
+                       + ("" if s["embedded"] >= s["chunks"] else "有一部分还没建，点「补建缺的向量」。"))
+        if res and res["done"] and not rebuilding:
+            if res["error"]:
+                st.error(f"上次重建失败：{res['error']}")
+            elif res["result"]:
+                r = res["result"]
+                st.success(f"上次重建完成：{r['rebuilt']} 段，{r['model']}（{r['dim']} 维）"
+                           + (f"，还剩 {r['left']} 段没建" if r["left"] else ""))
+        with st.container(horizontal=True):
+            busy = bool(run)
+            if st.button("补建缺的向量", icon=":material/add_circle:", key="embed_fill",
+                         disabled=busy or not s["ready"] or not s["matches"] or s["embedded"] >= s["chunks"]):
+                n = embed_missing()
+                rag_index.invalidate()
+                st.toast(f"补建了 {n} 段", icon=":material/check:")
+                st.rerun()
+            if st.button("重建向量索引", icon=":material/autorenew:", key="embed_rebuild",
+                         type="primary" if not s["matches"] else "secondary",
+                         disabled=busy or not s["ready"] or s["chunks"] == 0,
+                         help=f"清掉旧向量，用当前的 {settings.embed_model or '嵌入模型'} 全部重建。{s['chunks']} 段大约要 "
+                              f"{max(1, s['chunks'] // 600)} 分钟，期间检索照常可用。"):
+                _start_rebuild()
+                st.rerun()
+
+
+def _render_embed() -> None:
+    data = providers.load()
+    plist = data["embed_providers"]
+    names = {p["id"]: f"{p['name']} · {p.get('embed_model') or '—'}" for p in plist}
+    cur = data.get("embed_active") if data.get("embed_active") in names else plist[0]["id"]
+    st.markdown("**向量检索**（知识库语义搜索：嵌入模型 + 重排模型，换哪家都行）")
+    pick = st.segmented_control("当前使用", list(names), default=cur, format_func=names.get, key="embed_pick",
+                                label_visibility="collapsed")
+    if pick and pick != cur:
+        p = providers.embed_get(pick)
+        if not providers.embed_ready(p):
+            st.error(f"{p['name']} 还没填全（地址、密钥、嵌入模型），先在下面编辑。")
+        else:
+            old_sig = embedsig.sig()
+            providers.embed_set_active(pick)
+            rag_index.invalidate()
+            changed = embedsig.sig() != old_sig and embedsig.state()["embedded"] > 0
+            st.toast(f"已切换到 {p['name']}" + ("，嵌入模型变了，记得重建向量索引" if changed else ""),
+                     icon=":material/swap_horiz:")
+            st.rerun()
+
+    for p in plist:
+        with st.container(border=True):
+            head, act = st.columns([3, 2], vertical_alignment="center")
+            with head:
+                st.markdown(f"**{p['name']}**　" + (":blue-badge[当前使用]" if p["id"] == cur else "")
+                            + ("" if providers.embed_ready(p) else "　:orange-badge[未填全]"))
+                st.caption(f"{p['base_url'] or '（未填地址）'}　·　嵌入 {p.get('embed_model') or '—'}　·　"
+                           f"重排 {p.get('rerank_model') or '不用'}　·　密钥 {providers.masked(providers.effective_key(p))}")
+            with act:
+                with st.container(horizontal=True, horizontal_alignment="right"):
+                    if st.button("测试", key=f"eping_{p['id']}", icon=":material/bolt:", disabled=not providers.embed_ready(p)):
+                        st.session_state[f"eping_msg_{p['id']}"] = llm.embed_ping(p)
+                    if p["id"] != cur and st.button("删除", key=f"edel_{p['id']}", icon=":material/delete:"):
+                        providers.embed_delete(p["id"])
+                        st.rerun()
+            res = st.session_state.get(f"eping_msg_{p['id']}")
+            if res:
+                (st.success if res[0] else st.error)(res[1])
+            with st.expander("编辑", icon=":material/edit:"):
+                _embed_form(p, f"eedit_{p['id']}")
+
+    with st.expander("添加向量检索服务", icon=":material/add:"):
+        _embed_form(None, "enew")
+    _index_status()
+
+
 def _render_data() -> None:
-    st.caption("留空的项不改。保存后立即生效。")
+    _render_embed()
+    st.divider()
+    st.caption("下面这些：留空的项不改，保存后立即生效。")
     with st.form("data_keys"):
         st.markdown("**网页搜索**（找新料、查价、找供应商都靠它；服务器 IP 被免费搜索限流，需要这把钥匙）")
         bocha = st.text_input("博查搜索 API Key", type="password",
                               placeholder=("已填 " + providers.masked(settings.bocha_api_key)) if settings.bocha_api_key else "未填")
-        st.markdown("**向量检索**（知识库语义搜索，固定用硅基流动 bge-m3）")
-        sf = st.text_input("硅基流动 API Key", type="password",
-                           placeholder=("已填 " + providers.masked(settings.sf_api_key)) if settings.sf_api_key else "未填")
         st.markdown("**文献数据库**（Scopus / ScienceDirect，可选）")
         c1, c2 = st.columns(2)
         els = c1.text_input("Elsevier API Key", type="password",
@@ -119,7 +259,7 @@ def _render_data() -> None:
         inst = c2.text_input("Elsevier Insttoken（可选）", type="password", placeholder="留空不改")
         mail = st.text_input("Unpaywall / OpenAlex 联系邮箱（可选）", settings.unpaywall_email)
         if st.form_submit_button("保存", type="primary", icon=":material/save:"):
-            set_env({"BOCHA_API_KEY": bocha or None, "SILICONFLOW_API_KEY": sf or None, "ELSEVIER_API_KEY": els or None,
+            set_env({"BOCHA_API_KEY": bocha or None, "ELSEVIER_API_KEY": els or None,
                      "ELSEVIER_INSTTOKEN": inst or None, "UNPAYWALL_EMAIL": mail or None, "OPENALEX_MAILTO": mail or None})
             st.toast("已保存", icon=":material/check:")
             st.rerun()

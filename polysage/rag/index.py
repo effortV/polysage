@@ -1,4 +1,4 @@
-"""混合检索索引：BM25（jieba 分词，中英通用）+ 向量（bge-m3）+ RRF 融合 + 可选重排。
+"""混合检索索引：BM25（jieba 分词，中英通用）+ 向量（设置页选的嵌入模型）+ RRF 融合 + 可选重排。
 
 索引在内存中缓存，按 chunks 表的 (count, max id) 版本号自动刷新。
 """
@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from .. import db, llm
+from .. import db, embedsig, llm
 
 _lock = threading.RLock()
 
@@ -128,10 +128,13 @@ def search(query: str, top_k: int = 8, source_types: list[str] | None = None, us
         if bm[i] > 0:
             ranks[int(i)] = ranks.get(int(i), 0.0) + 1.0 / (60 + rank)
 
-    # 向量
-    if idx.emb is not None:
-        qv = llm.embed([query])
-        if qv is not None:
+    # 向量（现有向量和当前嵌入模型对得上才用；换了模型还没重建就只用关键词）
+    if idx.emb is not None and embedsig.matches():
+        try:
+            qv = llm.embed([query])
+        except (llm.LLMError, llm.LLMNotConfigured):
+            qv = None
+        if qv is not None and qv.shape[1] == idx.emb.shape[1]:
             sims = idx.emb @ qv[0]
             for rank, j in enumerate(np.argsort(-sims)[:candidate_k]):
                 i = int(idx.emb_rows[j])

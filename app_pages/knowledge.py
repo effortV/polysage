@@ -85,8 +85,13 @@ def _render_tab_u() -> None:
             st.success(f"#{sid} {msg}")
         except Exception as e:  # noqa: BLE001
             st.error(str(e))
-    if st.button("补建向量", help="配置 SiliconFlow 密钥后运行一次"):
-        st.info(f"处理 {embed_missing()} 个切片")
+    if st.button("补建向量", help="给还没建向量的资料补上（向量检索在“设置 → 检索与数据源”里配）"):
+        from polysage import embedsig
+
+        if not embedsig.matches():
+            st.warning("现有向量和当前嵌入模型对不上，请到“设置 → 检索与数据源”点「重建向量索引」。")
+        else:
+            st.info(f"处理 {embed_missing()} 个切片")
 
 def _render_tab_c() -> None:
     ctype = st.segmented_control("类型", ["material", "literature", "patent"], default="material",

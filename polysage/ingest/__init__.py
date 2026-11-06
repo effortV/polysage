@@ -6,4 +6,5 @@ from .pipeline import (  # noqa: F401
     ingest_hit,
     ingest_text,
     ingest_url,
+    rebuild_vectors,
 )

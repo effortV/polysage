@@ -130,16 +130,49 @@ class Settings:
     def llm_ready(self) -> bool:
         return bool(self.chat_api_key)
 
+    # ---- 向量检索（嵌入 + 重排）：同样在设置页随便填，存在 data/llm_providers.json 的 embed_providers ----
+    @property
+    def embed_provider(self) -> dict:
+        from .providers import embed_active
+
+        return embed_active()
+
+    @property
+    def embed_api_key(self) -> str:
+        from .providers import effective_key
+
+        return effective_key(self.embed_provider)
+
+    @property
+    def embed_base_url(self) -> str:
+        return self.embed_provider.get("base_url", "")
+
+    @property
+    def embed_model(self) -> str:
+        return self.embed_provider.get("embed_model", "")
+
+    @property
+    def rerank_model(self) -> str:
+        return self.embed_provider.get("rerank_model", "")
+
+    @property
+    def embed_name(self) -> str:
+        return self.embed_provider.get("name", "向量检索")
+
+    @property
+    def embed_batch(self) -> int:
+        return int(self.embed_provider.get("batch") or 16)
+
     @property
     def embed_ready(self) -> bool:
-        """向量/重排固定走硅基流动 bge-m3；没有 SiliconFlow key 时退化为 BM25。"""
-        return bool(self.sf_api_key)
+        """没配好时知识库检索退化为只用关键词（BM25）。"""
+        return bool(self.embed_api_key and self.embed_base_url and self.embed_model)
 
     def status(self) -> dict[str, bool]:
         """给设置页展示：哪些接口已配置。"""
         return {
             f"当前对话模型：{self.chat_provider_name} · {self.chat_model}": bool(self.chat_api_key),
-            "向量检索（硅基流动 bge-m3）": bool(self.sf_api_key),
+            f"向量检索：{self.embed_name} · {self.embed_model or '未填模型'}": self.embed_ready,
             "网页搜索 API（博查）": bool(self.bocha_api_key),
             "OpenAlex": True,  # 无 key 也可用
             "Elsevier Scopus/ScienceDirect": bool(self.elsevier_api_key),
