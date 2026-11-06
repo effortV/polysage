@@ -99,6 +99,9 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     best_line = []
     for g in (2, 1, 0):
         items = cur["groups"].get("现有料", {}).get(g) or []
+        unsure = (cur.get("uncertain") or {}).get(g)
+        if not items and unsure:
+            best_line.append(f"透光≥{R.GRADE_LABEL[g]}：还没有八成把握（点估计 {unsure['cost']:.0f} 元/吨，建议试一组确认）")
         if items:
             ev = items[0]
             m2 = ""
@@ -114,7 +117,11 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     newer = [ev for items in (cur["groups"].get("加新料") or {}).values() for ev in items]
     concl.append(f"**新料**：有 {len(newer)} 个方案比只用现有料更省（见第六节），要先确认料源和外观。" if newer
                  else "**新料**：按现在的价格和系数，加/换新料都不比只用现有料更省；降本主要靠 B 层填充和厚度。")
-    counts = meta.get("counts") or {}
+    counts = dict(meta.get("counts") or {})
+    if not counts:                                   # 下一轮没记 meta：按目的的前缀数
+        for tr_ in trials:
+            kind = tr_["purpose"].split("：")[0]
+            counts[kind] = counts.get(kind, 0) + 1
     concl.append(f"**本轮试验 {len(trials)} 组**：" + "，".join(f"{k} {v} 组" for k, v in counts.items())
                  + f"。配方表、投料单和数据记录表见《ABA第{round_no}轮试验方案》Word。")
     concl.append("**现在的预测是定性的**（按材料类别的经验系数），把握标在每个方案后面；做完这一轮、回填实测，"
@@ -165,6 +172,10 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
             W.add_table(doc, lines, widths_cm=[1.5, 0.6, 3.4, 4.2, 1.0, 1.3, 1.5, 1.6, 1.0, 1.2, 1.0], font_size=8)
         else:
             W.para(doc, "没有（在约束内找不到，或不比只用现有料省）。")
+        if gname == "现有料":
+            for g, ev in (cur.get("uncertain") or {}).items():
+                W.para(doc, f"**透光≥{R.GRADE_LABEL[g]}：按现有实验数据还没有八成把握**。点估计最省的是 {ev['text']}，"
+                            f"{ev['cost']:.0f} 元/吨（{_pct(ref.get('cost'), ev['cost'])}）——建议试一组确认。")
     tops = [(g, (cur["groups"].get("现有料", {}).get(g) or [None])[0]) for g in (2, 1, 0)]
     for g, ev in tops:
         if ev and ev.get("drivers"):
@@ -204,7 +215,8 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     # 七、本轮试验
     doc.add_heading(f"七、第 {round_no} 轮试验怎么安排", level=1)
     W.add_table(doc, [{"类别": k, "组数": v} for k, v in counts.items()], widths_cm=[4, 2], font_size=9)
-    cheapest = sorted((t for t in trials if t["purpose"].startswith("降本")), key=lambda t: t["predicted"].get("cost") or 1e9)[:5]
+    cheapest = sorted((t for t in trials if t["purpose"].startswith(("降本", "利用"))),
+                      key=lambda t: t["predicted"].get("cost") or 1e9)[:5]
     if cheapest:
         W.para(doc, "**预测最省的几组（优先做）**：")
         W.bullets(doc, [f"{t['code']}：{t['design'].text()}，预计 {t['predicted'].get('cost'):.0f} 元/吨，"

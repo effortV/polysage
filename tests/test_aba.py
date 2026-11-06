@@ -150,6 +150,12 @@ def test_experiment_loop(aba_prices):
     assert cal["roles"]["filler"]["td"] < R.ROLES["filler"]["td"]               # 数据说填充更伤横向，系数跟着变
     ctx = Ctx()
     assert ctx.predict(base_design(4.5), base_design(4.5)).get("md_N")           # 校准后有 N 的绝对值
+    assert len(cal["trans_cov"]) == len(cal["trans_terms"])                      # 透光参数的不确定度也存了
+    p = ctx.predict(base_design(4.5, filler=10, hdpe=10), base_design(4.5))
+    assert p["trans_sd"] > 0 and p["grade"] <= p["grade_point"]                  # 承诺的档位不高于点估计
+    novel = Design(a={"LL": 100}, b={"LL": 70, "POE": 30}, a_ratio=0.45, thickness=4.5)
+    if ctx.role.get("POE") and "POE" in ctx.mats:
+        assert ctx.trans_sd(novel) > ctx.trans_sd(base_design(4.5))              # 没试过的料更拿不准
     r2 = E.next_round({"md_req": 1.0, "td_req": 1.0, "use_new": False})
     purposes = [t["purpose"] for t in r2["trials"]]
     feasible = {g for g, items in O.run({"md_req": 1.0, "td_req": 1.0, "use_new": False})["groups"]["现有料"].items() if items}

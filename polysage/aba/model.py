@@ -16,6 +16,8 @@ BASE_RECYCLED = "R1"       # 现配方的高压再生回料
 BASE_SPLIT = {BASE_RESIN: 66.7, BASE_RECYCLED: 33.3}     # 50 kg LLDPE + 25 kg 再生
 BASE_A_RATIO = 0.45
 DEFAULT_T_REF = 4.5        # 现配方对照厚度（丝）；常用 3~6 丝
+SAFE_Z = 0.84              # 推荐时透光按“八成把握”承诺：分数减 0.84 个标准差再判档
+PRIOR_TRANS_SD = 0.15      # 没被实验校准过的料：每 10 个百分点，透光分 ±0.15 的不确定
 
 
 def _fmt(v: float) -> str:
@@ -96,6 +98,14 @@ class Ctx:
         self.cal = R.calibration()
         self.s0 = float(self.cal.get("trans_intercept", R.S0))          # 校准后用数据给的透光基线
         self.kt = float(self.cal.get("thick_trans", R.THICK_TRANS))     # 每厚 1 丝透光分变化
+        # 校准给的透光参数协方差：推荐时按“至少八成把握达到”的档位承诺，拿不准的不往高档里报
+        self.t_terms = list(self.cal.get("trans_terms") or [])
+        cov = self.cal.get("trans_cov")
+        self.t_cov = None
+        if cov and len(cov) == len(self.t_terms):
+            import numpy as _np
+
+            self.t_cov = _np.array(cov, dtype=float)
 
     # ---------- 成本与密度 ----------
     def layer_cost(self, comp: dict[str, float]) -> float | None:
@@ -143,15 +153,37 @@ class Ctx:
             tr += c["trans"] * share / 10
         return math.exp(md), math.exp(td), tr
 
+    def trans_sd(self, d: Design) -> float:
+        """透光分预测的标准差：校准过的料用数据给的协方差；没校准过的料按先验，每 10 点 ±0.15 的不确定。"""
+        if self.t_cov is None:
+            return 0.0
+        shares: dict[str, float] = {}
+        for k, share in d.whole().items():
+            role = self.role.get(k, "additive")
+            shares[role] = shares.get(role, 0.0) + share / 10
+        x = [1.0] + [shares.pop(r, 0.0) for r in self.t_terms[1:-1]] + [d.thickness - DEFAULT_T_REF]
+        import numpy as _np
+
+        xv = _np.array(x)
+        var = float(xv @ self.t_cov @ xv)
+        var += sum((v * PRIOR_TRANS_SD) ** 2 for r, v in shares.items() if r != "lldpe")
+        return max(var, 0.0) ** 0.5
+
+    def grade_safe(self, score: float, d: Design) -> int:
+        """承诺的档位：透光分减去 0.84 个标准差（≈ 八成把握）再判档。没校准时就是点估计。"""
+        return R.grade_of(score - SAFE_Z * self.trans_sd(d))
+
     def predict(self, d: Design, ref: Design) -> dict[str, Any]:
         md, td, tr = self.indices(d)
         md0, td0, _ = self.indices(ref)
         md_rel = (md / md0) * (d.thickness / ref.thickness)
         td_rel = (td / td0) * (d.thickness / ref.thickness)
         score = tr + self.kt * (d.thickness - ref.thickness)
-        grade = R.grade_of(score)
+        point = R.grade_of(score)
+        grade = self.grade_safe(score, d)
         out = {"md_rel": round(md_rel, 3), "td_rel": round(td_rel, 3), "trans_score": round(score, 2),
-               "grade": grade, "grade_label": R.GRADE_LABEL[grade], "confidence": self.confidence(d)}
+               "grade": grade, "grade_label": R.GRADE_LABEL[grade], "grade_point": point,
+               "trans_sd": round(self.trans_sd(d), 3), "confidence": self.confidence(d)}
         if self.cal.get("md_N_ref"):
             out["md_N"] = round(md_rel * float(self.cal["md_N_ref"]), 1)
         if self.cal.get("td_N_ref"):

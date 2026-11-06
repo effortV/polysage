@@ -45,6 +45,7 @@ class Query:
     custom_pct: float = 0.0
     top_k: int = 3
     exclude: list[str] = field(default_factory=list)
+    optimistic: bool = False            # True = 透光按点估计判档（找“拿不准”的候选用）；默认按八成把握
 
 
 def _blend(r: float, resin: str, recycled: str) -> dict[str, float]:
@@ -205,7 +206,7 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
                         if ctx.check(d):
                             continue
                         score = tr + ctx.kt * (t - q.t_ref)
-                        grade = R.grade_of(score)
+                        grade = R.grade_of(score) if q.optimistic else ctx.grade_safe(score, d)   # 默认按“八成把握”承诺档位
                         if q.grade_min is not None and grade < q.grade_min:
                             continue
                         results["现有料" if v["name"] == "现有料" else "加新料"].append(
@@ -251,11 +252,23 @@ def run(q: Query | dict | None = None) -> dict[str, Any]:
         better = [ev for items in groups_out["加新料"].values() for ev in items]
         if not better:
             notes.append("按现在的价格和系数，加/换新料都没有比只用现有料更省：新料的价值主要在提性能，降本还得靠 B 层填充和厚度。")
+    # 某档按八成把握一个都没有、但点估计有：给出“拿不准”的最省候选，建议试一组确认
+    uncertain: dict[int, dict[str, Any]] = {}
+    if not q.optimistic and ctx.t_cov is not None:
+        for g in grades:
+            if groups_out.get("现有料", {}).get(g):
+                continue
+            alt = run(Query(**{**asdict(q), "optimistic": True, "grade_min": g, "top_k": 1, "use_new": False}))
+            ev = (alt["groups"].get("现有料", {}).get(g) or [None])[0]
+            if ev:
+                uncertain[g] = ev
+                notes.append(f"透光≥{R.GRADE_LABEL[g]}：按现有实验数据还没有八成把握做到；点估计最省的是 {ev['text']}，"
+                             f"{ev['cost']:.0f} 元/吨（{saving_text(ev.get('saving_pct'))}）——建议试一组确认。")
     notes.append("按吨计价：厚度不改变每吨价格，所以每个方案都取了刚好满足拉断力要求的最薄厚度。"
                  "填充多、厚度大的方案每吨便宜但每平方米用料多——“元/m²(参考)”一栏给出同一张膜的料钱，"
                  "客户按面积买或厚度有规格时请把厚度固定再算。")
     return {"query": asdict(q), "scenario": {k: scen[k] for k in ("name", "label", "ratio", "ref")}, "ref": ref_eval,
-            "groups": groups_out, "notes": notes, "n_evaluated": n_eval}
+            "groups": groups_out, "notes": notes, "n_evaluated": n_eval, "uncertain": uncertain}
 
 
 # ---------------- 给人看的 ----------------
@@ -298,8 +311,10 @@ def to_text(out: dict[str, Any], max_per_grade: int = 2) -> str:
         lines.append(f"## {gname}")
         for g, items in per.items():
             if not items:
-                lines.append(f"- 透光 ≥{R.GRADE_LABEL[g]}：" + ("加/换新料不比只用现有料更省" if gname == "加新料"
-                                                                 else "在约束内找不到方案"))
+                unsure = (out.get("uncertain") or {}).get(g)
+                lines.append(f"- 透光 ≥{R.GRADE_LABEL[g]}：" + ("加/换新料不比只用现有料更省" if gname == "加新料" else
+                                                                 (f"还没有八成把握；点估计最省 {unsure['text']}，{unsure['cost']:.0f} 元/吨，建议试一组确认"
+                                                                  if unsure else "在约束内找不到方案")))
                 continue
             for i, ev in enumerate(items[:max_per_grade], 1):
                 lines.append(f"- 透光 ≥{R.GRADE_LABEL[g]} #{i}：{ev['text']}｜{ev['cost']:.0f} 元/吨"

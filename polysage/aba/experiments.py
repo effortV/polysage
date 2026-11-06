@@ -295,13 +295,20 @@ def export_round_docx(round_no: int, t_ref: float = DEFAULT_T_REF, batch_kg: flo
         "新料": "库里网上找到、买得到的新料，预测比只用现有料更省；打样前先确认料源、外观（本色/透明）和稳定供货。",
         "建模": "D-最优设计在 A/B 层再生比例、B 层填充、B 层 HDPE、A 层占比、厚度六个因素上铺开，"
                 "数据回来后机器学习（岭回归 + 有序回归）才能把每个因素的影响、弯曲和交互学准。",
+        "利用": "按已用实测校准过的模型，各透光档预测最省、拉断力达标的几组——最可能直接用上的。",
+        "探索": "预测可行、但离已做过的配方最远的几组：补数据空白，让模型在没试过的区域也准。",
     }
-    for k, txt in explain.items():
-        n = counts.get(k) or sum(1 for r in rows if r["purpose"].startswith(k))
-        if n:
-            W.para(doc, f"**{k} {n} 组**：{txt}", style="List Bullet")
-    W.note(doc, "顺序建议：先做现配方对照和降本组（最有用），建模组已按配方排好，同一配方连着改厚度最省换料时间。"
-                "做不了的组（吹不起来、外观明显不行）在备注里写原因，同样有用。")
+    if not counts:                                   # 下一轮等没记 meta 的：按目的的前缀数
+        for r in rows:
+            kind = r["purpose"].split("：")[0]
+            counts[kind] = counts.get(kind, 0) + 1
+    if counts.get("现配方对照") == 1:
+        explain["现配方对照"] = "现配方 4.5 丝一组，每轮都做：看机台、原料批次有没有漂移，所有预测都以它为基准。"
+    for k, n in counts.items():
+        W.para(doc, f"**{k} {n} 组**" + (f"：{explain[k]}" if k in explain else ""), style="List Bullet")
+    W.note(doc, ("顺序建议：先做现配方对照和降本组（最有用），建模组已按配方排好，同一配方连着改厚度最省换料时间。"
+                 if "建模" in counts else "顺序建议：先做现配方对照，再做利用组，最后做探索组。")
+           + "做不了的组（吹不起来、外观明显不行）在备注里写原因，同样有用。")
 
     doc.add_heading("二、试验配方", level=1)
     plan = []
@@ -311,7 +318,8 @@ def export_round_docx(round_no: int, t_ref: float = DEFAULT_T_REF, batch_kg: flo
         pct = (ref_cost - cost) / ref_cost * 100 if cost and ref_cost else None
         plan.append({"编号": r["code"], "目的": r["purpose"], "A 层（占比）": f"{d.a_ratio:.0%}：{layer_text(d.a)}",
                      "B 层（占比）": f"{1 - d.a_ratio:.0%}：{layer_text(d.b)}", "厚度(丝)": d.thickness,
-                     "预计元/吨": cost, "较现配方": "" if pct is None else (f"省 {pct:.1f}%" if pct >= 0 else f"贵 {-pct:.1f}%"),
+                     "预计元/吨": cost, "较现配方": "" if pct is None else ("持平" if abs(pct) < 0.05 else
+                                                                         (f"省 {pct:.1f}%" if pct > 0 else f"贵 {-pct:.1f}%")),
                      "预测纵/横(×现配方)": f"{p.get('md_rel', 0):.2f} / {p.get('td_rel', 0):.2f}", "预测透光": p.get("grade_label")})
     W.add_table(doc, plan, widths_cm=[1.4, 5.2, 4.6, 5.4, 1.3, 1.6, 1.5, 2.4, 1.3], font_size=8)
     W.note(doc, f"现配方（{t_ref:g} 丝）：{ref.text()}，{ref_cost:.0f} 元/吨。“较现配方”按每吨价格比；预测拉断力是相对现配方 "
@@ -481,6 +489,20 @@ def _ordinal_to_prior(X: np.ndarray, g: np.ndarray, prior: np.ndarray, s0: float
         return loss, grad
 
     res = minimize(objective, np.concatenate([[s0], prior]), jac=True, method="L-BFGS-B", options={"maxiter": 500})
+    # 拉普拉斯近似：在最优点用梯度差分求海森矩阵，逆就是参数的（近似）协方差——数据少、离分界远的料，方差就大
+    th, h = res.x, 1e-4
+    H = np.zeros((len(th), len(th)))
+    for j in range(len(th)):
+        e = np.zeros(len(th))
+        e[j] = h
+        H[:, j] = (objective(th + e)[1] - objective(th - e)[1]) / (2 * h)
+    H = (H + H.T) / 2
+    try:
+        cov = np.linalg.inv(H)
+        cov = (cov + cov.T) / 2
+    except np.linalg.LinAlgError:
+        cov = np.eye(len(th)) * 0.05
+    _ordinal_to_prior.last_cov = cov
     return float(res.x[0]), res.x[1:]
 
 
@@ -516,6 +538,8 @@ def calibrate(t_ref: float = DEFAULT_T_REF, lam: float = RIDGE) -> dict[str, Any
             out["roles"].setdefault(r_, {})["trans"] = round(float(b), 4)
         out["thick_trans"] = round(float(beta[-1]), 4)
         out["trans_intercept"] = round(alpha, 3)
+        out["trans_terms"] = ["_intercept"] + used + ["_thick"]            # 协方差的行列顺序
+        out["trans_cov"] = [[round(float(v), 6) for v in row] for row in _ordinal_to_prior.last_cov]
         pred = np.array([R.grade_of(v) for v in (alpha + X @ beta)])
         out["grade_hit"] = round(float(np.mean(pred == np.array([int(g) for _, g, _ in gdata]))) * 100, 1)
     counts: dict[str, int] = {}
@@ -547,7 +571,7 @@ def compare() -> pd.DataFrame:
         rows.append({"编号": r["code"], "配方": d.text(), "实测纵向N": r.get("md_n"), "预测纵向N": p.get("md_N"),
                      "实测横向N": r.get("td_n"), "预测横向N": p.get("td_N"),
                      "实测透光": R.GRADE_LABEL.get(r["grade"]) if r.get("grade") is not None else None,
-                     "预测透光": p["grade_label"]})
+                     "预测透光": R.GRADE_LABEL[p.get("grade_point", p["grade"])]})
     df = pd.DataFrame(rows)
     if not cal:
         df.attrs["note"] = "还没校准：预测纵/横向 N 要等现配方对照组回填后才有绝对值。"
@@ -596,11 +620,20 @@ def next_round(query: dict[str, Any] | None = None, n_exploit: int = 6, n_explor
         if len(chosen) >= n_exploit:
             break
         take(ev, "利用：预测最省")
-    # 探索：在预测可行的方案里，挑离已做过的配方最远的
+    # 探索一：透光拿不准的——点估计能上一档、但还没有八成把握；测了就知道这档能不能用更便宜的配方做到
+    n_far = n_explore
+    unsure = list((out.get("uncertain") or {}).values())             # 某档没有八成把握时，点估计最省的那组
+    unsure += sorted((ev for ev in pool if ev["design"].key() not in keys and ev.get("grade_point", ev["grade"]) > ev["grade"]),
+                     key=lambda e: e["cost"] or 1e9)
+    unsure = [ev for ev in unsure if ev["design"].key() not in keys]
+    for ev in unsure[:min(2, max(0, n_explore - 1))]:
+        if take(ev, f"探索：透光拿不准（可能到“{R.GRADE_LABEL[ev['grade_point']]}”），测了能确认"):
+            n_far -= 1
+    # 探索二：在预测可行的方案里，挑离已做过的配方最远的
     done_v = [vec(d) for d in done] + [vec(d) for d, _ in chosen]
     rest = [ev for ev in pool if ev["design"].key() not in keys]
     rest.sort(key=lambda e: -min((float(np.linalg.norm(vec(e["design"]) - v)) for v in done_v), default=0.0))
-    for ev in rest[:n_explore]:
+    for ev in rest[:n_far]:
         take(ev, "探索：离已做过的远")
     items = list(chosen)
     items += [(base_design(q.get("t_ref", DEFAULT_T_REF)), "现配方对照")]
