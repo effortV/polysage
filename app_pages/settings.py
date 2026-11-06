@@ -8,11 +8,12 @@ from polysage.envfile import set_env
 from polysage.ingest import embed_missing, rebuild_vectors
 from polysage.pipeline import task
 from polysage.rag import index as rag_index
-from polysage.sources import elsevier
+from polysage.sources import elsevier, openalex, wiley
 
 jobs.JOB_NAMES.setdefault("embed_rebuild", "重建向量索引")
+jobs.JOB_NAMES.setdefault("embed_fill", "补建向量")
 
-ui.page_header("设置", "对话模型、向量检索都能随便换（填地址、密钥、模型即可）；还有搜索接口、访问密码、任务书。")
+ui.page_header("设置", "对话模型、向量检索都能随便换（填地址、密钥、模型即可）；还有搜索与文献接口、访问密码、任务书。")
 
 with st.container(horizontal=True):
     for name, ok in settings.status().items():
@@ -122,7 +123,7 @@ def _embed_form(p: dict | None, key: str) -> None:
         c1, c2 = st.columns(2)
         emb = c1.text_input("嵌入模型", base.get("embed_model", ""), placeholder="比如：BAAI/bge-m3")
         rr = c2.text_input("重排模型（可空）", base.get("rerank_model", ""), placeholder="比如：BAAI/bge-reranker-v2-m3",
-                           help="走 /rerank 接口（硅基流动、Jina 的格式）。没有就留空：按关键词 + 向量混合排序，不再精排。")
+                           help="把粗选出来的几十段再按和问题的相关度精排一遍。接口位置会自动找（/rerank 或百炼的 /compatible-api/v1/reranks）。没有就留空：按关键词 + 向量混合排序。")
         c1, c2 = st.columns([3, 1])
         ph = "sk-…"
         if p:
@@ -131,7 +132,7 @@ def _embed_form(p: dict | None, key: str) -> None:
         api_key = c1.text_input("密钥", type="password", placeholder=ph,
                                 help="硅基流动的密钥和对话模型那边共用，填一边就行。")
         batch = c2.number_input("每次发几段", 1, 256, int(base.get("batch") or 16),
-                                help="一次请求最多嵌入几段文字。阿里云百炼最多 10；不确定就填 10。")
+                                help="一次请求最多嵌入几段文字。填大了也没关系：服务报上限时会自动改小。")
         if st.form_submit_button("保存", type="primary", icon=":material/save:"):
             if not providers.slug_ok(url) or not emb.strip():
                 st.error("接口地址和嵌入模型都要填，地址以 http(s):// 开头。")
@@ -146,9 +147,10 @@ def _embed_form(p: dict | None, key: str) -> None:
                 st.rerun()
 
 
-def _start_rebuild() -> None:
-    if jobs.start("embed_rebuild", rebuild_vectors):
-        st.toast("已在后台开始重建向量索引", icon=":material/autorenew:")
+def _start_vector_job(name: str) -> None:
+    fn = rebuild_vectors if name == "embed_rebuild" else embed_missing
+    if jobs.start(name, fn):
+        st.toast(f"已在后台开始{jobs.JOB_NAMES[name]}", icon=":material/autorenew:")
     else:
         run = jobs.info() or {}
         st.warning(f"后台正在跑「{jobs.JOB_NAMES.get(run.get('name'), run.get('name'))}」，等它跑完再重建。")
@@ -157,12 +159,13 @@ def _start_rebuild() -> None:
 def _index_status() -> None:
     s = embedsig.state()
     run = jobs.info()
-    rebuilding = bool(run and run["name"] == "embed_rebuild")
+    rebuilding = bool(run and run["name"] in ("embed_rebuild", "embed_fill"))
     res = jobs.result("embed_rebuild")
+    fill = jobs.result("embed_fill")
     with st.container(border=True):
         st.markdown("**知识库向量索引**")
         if rebuilding:
-            st.info(f"正在用 {settings.embed_model} 重建向量：已完成 {s['embedded']} / {s['chunks']} 段"
+            st.info(f"正在用 {settings.embed_model} {jobs.JOB_NAMES[run['name']]}：已完成 {s['embedded']} / {s['chunks']} 段"
                     f"（{run['elapsed'] / 60:.0f} 分钟）。这期间检索照常可用，刷新页面看进度。", icon=":material/autorenew:")
         elif s["chunks"] == 0:
             st.caption("知识库里还没有资料。以后入库的资料会自动用当前嵌入模型建向量。")
@@ -173,6 +176,11 @@ def _index_status() -> None:
         else:
             st.caption(f"{s['embedded']} / {s['chunks']} 段已建向量（{s['stored'] or s['current']}）。"
                        + ("" if s["embedded"] >= s["chunks"] else "有一部分还没建，点「补建缺的向量」。"))
+        if fill and fill["done"] and not rebuilding:
+            if fill["error"]:
+                st.error(f"上次补建失败：{fill['error']}")
+            elif fill["result"] is not None:
+                st.success(f"上次补建完成：{fill['result']} 段")
         if res and res["done"] and not rebuilding:
             if res["error"]:
                 st.error(f"上次重建失败：{res['error']}")
@@ -183,17 +191,16 @@ def _index_status() -> None:
         with st.container(horizontal=True):
             busy = bool(run)
             if st.button("补建缺的向量", icon=":material/add_circle:", key="embed_fill",
-                         disabled=busy or not s["ready"] or not s["matches"] or s["embedded"] >= s["chunks"]):
-                n = embed_missing()
-                rag_index.invalidate()
-                st.toast(f"补建了 {n} 段", icon=":material/check:")
+                         disabled=busy or not s["ready"] or not s["matches"] or s["embedded"] >= s["chunks"],
+                         help="给还没建向量的资料补上（后台跑，不用等）。"):
+                _start_vector_job("embed_fill")
                 st.rerun()
             if st.button("重建向量索引", icon=":material/autorenew:", key="embed_rebuild",
                          type="primary" if not s["matches"] else "secondary",
                          disabled=busy or not s["ready"] or s["chunks"] == 0,
                          help=f"清掉旧向量，用当前的 {settings.embed_model or '嵌入模型'} 全部重建。{s['chunks']} 段大约要 "
                               f"{max(1, s['chunks'] // 600)} 分钟，期间检索照常可用。"):
-                _start_rebuild()
+                _start_vector_job("embed_rebuild")
                 st.rerun()
 
 
@@ -244,28 +251,85 @@ def _render_embed() -> None:
     _index_status()
 
 
+def _secret(v: str) -> str | None:
+    """留空 = 不改；填一个减号 = 清空。"""
+    v = (v or "").strip()
+    if not v:
+        return None
+    return "" if v == "-" else v
+
+
+def _ph(value: str, hint: str = "") -> str:
+    return (f"已填 {providers.masked(value)}，留空不改") if value else (hint or "未填")
+
+
+def _openalex_keys_view() -> None:
+    rows = openalex.key_report()
+    if not rows:
+        st.caption("还没填 OpenAlex key。不填也能用，但慢、容易被限流。")
+        return
+    ok = sum(1 for _, s in rows if s == "可用")
+    unchecked = sum(1 for _, s in rows if s == "未检查")
+    head = f"**共 {len(rows)} 个 key，可用 {ok} 个**" + (f"（{unchecked} 个还没检查）" if unchecked else "")
+    st.markdown(head + " - " + " - ".join(f"`{k}` {s}" for k, s in rows))
+
+
 def _render_data() -> None:
     _render_embed()
     st.divider()
-    st.caption("下面这些：留空的项不改，保存后立即生效。")
     with st.form("data_keys"):
         st.markdown("**网页搜索**（找新料、查价、找供应商都靠它；服务器 IP 被免费搜索限流，需要这把钥匙）")
-        bocha = st.text_input("博查搜索 API Key", type="password",
-                              placeholder=("已填 " + providers.masked(settings.bocha_api_key)) if settings.bocha_api_key else "未填")
-        st.markdown("**文献数据库**（Scopus / ScienceDirect，可选）")
-        c1, c2 = st.columns(2)
-        els = c1.text_input("Elsevier API Key", type="password",
-                            placeholder=("已填 " + providers.masked(settings.elsevier_api_key)) if settings.elsevier_api_key else "未填")
-        inst = c2.text_input("Elsevier Insttoken（可选）", type="password", placeholder="留空不改")
-        mail = st.text_input("Unpaywall / OpenAlex 联系邮箱（可选）", settings.unpaywall_email)
+        bocha = st.text_input("博查搜索 API Key", type="password", placeholder=_ph(settings.bocha_api_key))
+        st.markdown("**文献 API**（联网找文献 / 取全文；只存在服务器上，留空 = 不改，填一个减号 `-` = 清空）")
+        left, right = st.columns([2, 3], vertical_alignment="center")
+        oa = left.text_area("OpenAlex key", placeholder="OpenAlex key（一行一个；留空 = 不改）", height=100,
+                            label_visibility="collapsed",
+                            help="可以填多个：一个失效或今天额度用完，自动换下一个。填了会覆盖原来的整组。")
+        with right:
+            _openalex_keys_view()
+        c1, c2, c3, c4 = st.columns(4)
+        els = c1.text_input("Elsevier API key（Scopus 检索 + 校园 IP 下全文）", type="password",
+                            placeholder=_ph(settings.elsevier_api_key))
+        inst = c2.text_input("Elsevier Insttoken（可选）", type="password", placeholder=_ph(settings.elsevier_insttoken),
+                             help="不在校园 IP 时，用它证明机构身份下全文。")
+        wil = c3.text_input("Wiley TDM token", type="password", placeholder=_ph(settings.wiley_tdm_token),
+                            help="下 Wiley 的全文 PDF。开放获取的都能下；订阅文章要机构订阅、且服务器在机构 IP 内。")
+        s2 = c4.text_input("Semantic Scholar key（可选）", type="password", placeholder=_ph(settings.semantic_scholar_api_key),
+                           help="不填也能用，填了不容易被限流。")
+        mail = st.text_input("联系邮箱（Unpaywall 找开放获取全文必填；OpenAlex / Crossref 带上更快）", settings.unpaywall_email)
         if st.form_submit_button("保存", type="primary", icon=":material/save:"):
-            set_env({"BOCHA_API_KEY": bocha or None, "ELSEVIER_API_KEY": els or None,
-                     "ELSEVIER_INSTTOKEN": inst or None, "UNPAYWALL_EMAIL": mail or None, "OPENALEX_MAILTO": mail or None})
+            pairs = {"BOCHA_API_KEY": _secret(bocha), "ELSEVIER_API_KEY": _secret(els), "ELSEVIER_INSTTOKEN": _secret(inst),
+                     "WILEY_TDM_TOKEN": _secret(wil), "SEMANTIC_SCHOLAR_API_KEY": _secret(s2),
+                     "UNPAYWALL_EMAIL": mail.strip() or None, "OPENALEX_MAILTO": mail.strip() or None}
+            remove: list[str] = []
+            oa_raw = oa.strip()
+            if oa_raw:
+                keys: list[str] = []
+                for k in oa_raw.replace(",", "\n").replace("，", "\n").split():
+                    if k != "-" and k not in keys:
+                        keys.append(k)
+                pairs["OPENALEX_API_KEYS"] = ",".join(keys)
+                remove.append("OPENALEX_API_KEY")          # 旧的单个 key 并进来了，不再单独存
+            set_env(pairs, remove=remove)
+            if oa_raw and settings.openalex_keys:
+                with st.spinner("检查 OpenAlex key…"):
+                    openalex.check_keys()
             st.toast("已保存", icon=":material/check:")
             st.rerun()
-    if st.button("测试 Scopus", icon=":material/bolt:", disabled=not settings.elsevier_api_key):
-        ok, msg = elsevier.ping()
-        (st.success if ok else st.error)(msg)
+
+    with st.container(horizontal=True):
+        if st.button("检查 OpenAlex key", icon=":material/fact_check:", disabled=not settings.openalex_keys):
+            with st.spinner("逐个试一下…"):
+                openalex.check_keys()
+            st.rerun()
+        if st.button("测试 Scopus", icon=":material/bolt:", disabled=not settings.elsevier_api_key):
+            st.session_state["lit_test"] = ("Scopus", *elsevier.ping())
+        if st.button("测试 Wiley", icon=":material/bolt:", disabled=not settings.wiley_tdm_token):
+            with st.spinner("找一篇 Wiley 开放获取文章试下载…"):
+                st.session_state["lit_test"] = ("Wiley", *wiley.ping())
+    res = st.session_state.get("lit_test")
+    if res:
+        (st.success if res[1] else st.error)(f"{res[0]}：{res[2]}")
 
 
 def _render_pw() -> None:

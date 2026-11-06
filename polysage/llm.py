@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import time
 from dataclasses import dataclass, field
@@ -169,7 +170,7 @@ def _post(path: str, payload: dict[str, Any], timeout: float = 300.0, retries: i
 
 
 def _post_raw(path: str, payload: dict[str, Any], timeout: float, retries: int, kind: str) -> dict[str, Any]:
-    url = _base_url(kind) + path
+    url = path if path.startswith("http") else _base_url(kind) + path      # 重排可能不在同一个前缀下
     last: Exception | None = None
     for attempt in range(retries):
         try:
@@ -395,66 +396,152 @@ def parse_json_loose(text: str) -> Any:
     raise LLMError("模型返回了空内容（多为思考占满 max_tokens 或服务超时）" if not text else f"模型未返回可解析的 JSON：{text[:200]}")
 
 
+_BATCH_LIMIT = re.compile(r"(?:larger than|more than|greater than|exceed(?:s|ed)?|at most|no more than|maximum(?: of)?|max(?:imum)?"
+                          r"(?: batch)?(?: size)?(?: is)?|不能超过|不超过|最多)\D{0,12}(\d{1,4})", re.I)
+
+
+def batch_limit_from_error(msg: str) -> int | None:
+    """从“一次最多 N 条”的报错里读出 N（如百炼：batch size ... should not be larger than 20）。"""
+    low = (msg or "").lower()
+    if "batch" not in low and "input" not in low and "条" not in msg:
+        return None
+    m = _BATCH_LIMIT.search(msg or "")
+    return int(m.group(1)) if m and 0 < int(m.group(1)) < 10000 else None
+
+
+def _shrink_batch(err: str, batch: int) -> int | None:
+    """嵌入请求被拒时，看是不是“一次发太多”：是就返回更小的批量（报错里写了上限就按上限，否则减半）。"""
+    if batch <= 1 or not any(s in err for s in (" 400", " 413", " 422")):
+        return None
+    lim = batch_limit_from_error(err)
+    if lim and lim < batch:
+        return lim
+    if "batch" in err.lower() or "too many" in err.lower() or "too large" in err.lower():
+        return max(1, batch // 2)
+    return None
+
+
 def embed(texts: list[str], batch: int | None = None) -> np.ndarray | None:
-    """返回 (n, d) float32；向量检索没配好返回 None。每批条数按服务商设置（百炼一次最多 10 条）。"""
+    """返回 (n, d) float32；向量检索没配好返回 None。
+
+    每批条数按服务商设置；服务报“一次最多 N 条”时自动降到 N 并记住（不同家上限不同：百炼 10、通义 MaaS 20）。
+    """
     if not settings.embed_ready or not texts:
         return None
     batch = batch or settings.embed_batch
     model = settings.embed_model
     vecs: list[list[float]] = []
-    for i in range(0, len(texts), batch):
+    i = 0
+    while i < len(texts):
         part = [t[:6000] for t in texts[i:i + batch]]
-        data = _post("/embeddings", {"model": model, "input": part, "encoding_format": "float"}, kind="embed")
+        try:
+            data = _post("/embeddings", {"model": model, "input": part, "encoding_format": "float"}, kind="embed")
+        except LLMError as e:
+            smaller = _shrink_batch(str(e), len(part))
+            if smaller is None:
+                raise
+            batch = smaller
+            from .providers import embed_lower_batch
+
+            embed_lower_batch(settings.embed_provider.get("id"), batch)
+            activity.note(f"{settings.embed_name} 一次最多 {batch} 段，已自动改小", category="embed", ok=True)
+            continue
         items = sorted(data.get("data") or [], key=lambda x: x.get("index", 0))
         if len(items) != len(part):
             raise LLMError(f"{settings.embed_name} 返回的向量条数不对（发 {len(part)} 条，回 {len(items)} 条）")
         vecs.extend(it["embedding"] for it in items)
+        i += len(part)
     arr = np.asarray(vecs, dtype=np.float32)
     norms = np.linalg.norm(arr, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return arr / norms
 
 
+def rerank_urls(base_url: str, saved: str = "") -> list[str]:
+    """重排接口可能的位置：先用试通过的；再试 /rerank（硅基流动、Jina）；
+    阿里云百炼 / 通义 MaaS 的兼容模式不在 /compatible-mode/v1 下，而在 /compatible-api/v1/reranks。"""
+    base = (base_url or "").rstrip("/")
+    urls = [saved] if saved else []
+    urls.append(base + "/rerank")
+    if "/compatible-mode" in base:
+        urls.append(base.split("/compatible-mode")[0] + "/compatible-api/v1/reranks")
+    urls.append(base + "/reranks")
+    out: list[str] = []
+    for u in urls:
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
 def rerank(query: str, docs: list[str], top_n: int | None = None) -> list[tuple[int, float]] | None:
-    """返回 [(doc_index, score)] 按分数降序；没配重排模型或密钥返回 None（只用混合检索的顺序）。"""
+    """返回 [(doc_index, score)] 按分数降序；没配重排模型、接口找不到或出错都返回 None（只用混合检索的顺序）。"""
     if not settings.embed_ready or not settings.rerank_model or not docs:
         return None
+    p = settings.embed_provider
     payload = {"model": settings.rerank_model, "query": query, "documents": [d[:4000] for d in docs],
                "top_n": top_n or len(docs), "return_documents": False}
-    try:
-        data = _post("/rerank", payload, timeout=60.0, retries=2, kind="embed")
-    except LLMError:
-        return None
-    results = data.get("results") or []
-    return [(int(r["index"]), float(r.get("relevance_score", 0.0))) for r in results]
+    for url in rerank_urls(settings.embed_base_url, p.get("rerank_url", "")):
+        try:
+            data = _post(url, payload, timeout=60.0, retries=2, kind="embed")
+        except LLMError as e:
+            if " 404" in str(e) or " 405" in str(e):
+                continue                                   # 这个位置没有重排接口，换下一个
+            return None
+        results = data.get("results") or (data.get("output") or {}).get("results") or []
+        if url != p.get("rerank_url"):
+            from .providers import embed_remember
+
+            embed_remember(p.get("id"), rerank_url=url)
+        return [(int(r["index"]), float(r.get("relevance_score", 0.0))) for r in results]
+    return None
 
 
 def embed_ping(p: dict[str, Any]) -> tuple[bool, str]:
-    """设置页“测试”向量检索服务：试嵌入两句（看维度），配了重排就再试一次重排。不改当前设置。"""
-    from .providers import effective_key
+    """设置页“测试”向量检索服务：按设定的批量试嵌入（顺便测出一次最多几段），配了重排就找到重排接口并试一次。"""
+    from .providers import effective_key, embed_lower_batch, embed_remember
 
     key, url = effective_key(p), (p.get("base_url") or "").rstrip("/")
     if not key or not url or not p.get("embed_model"):
         return False, "地址、密钥、嵌入模型要填全。"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    batch = int(p.get("batch") or 16)
+    notes: list[str] = []
     try:
-        with net.client(url, timeout=30.0) as client:
-            r = client.post(url + "/embeddings", headers=headers,
-                            json={"model": p["embed_model"], "input": ["LLDPE 薄膜", "再生料"], "encoding_format": "float"})
+        with net.client(url, timeout=40.0) as client:
+            while True:
+                r = client.post(url + "/embeddings", headers=headers,
+                                json={"model": p["embed_model"], "input": [f"LLDPE 薄膜样品 {i}" for i in range(batch)],
+                                      "encoding_format": "float"})
+                smaller = _shrink_batch(f" {r.status_code} {r.text[:500]}", batch) if r.status_code != 200 else None
+                if smaller is None:
+                    break
+                batch = smaller
             if r.status_code != 200:
                 return False, f"嵌入失败 {r.status_code}：{r.text[:300]}"
+            if batch < int(p.get("batch") or 16):
+                embed_lower_batch(p.get("id"), batch)
+                notes.append(f"这家一次最多 {batch} 段，已自动把“每次发几段”改成 {batch}")
             dim = len((r.json().get("data") or [{}])[0].get("embedding") or [])
             if not dim:
                 return False, "嵌入接口通了，但没返回向量，检查模型名。"
-            msg = f"嵌入可用：{p['embed_model']}，{dim} 维"
+            msg = f"嵌入可用：{p['embed_model']}，{dim} 维，每次 {batch} 段"
             if p.get("rerank_model"):
-                r = client.post(url + "/rerank", headers=headers,
-                                json={"model": p["rerank_model"], "query": "薄膜", "documents": ["LLDPE 薄膜", "钢材"], "top_n": 2})
-                ok = r.status_code == 200 and bool(r.json().get("results"))
-                msg += f"；重排{'可用' if ok else '不可用（' + str(r.status_code) + '），会只用混合检索不重排'}"
+                body = {"model": p["rerank_model"], "query": "薄膜", "documents": ["LLDPE 薄膜", "钢材"], "top_n": 2}
+                found = ""
+                for ru in rerank_urls(url, p.get("rerank_url", "")):
+                    r = client.post(ru, headers=headers, json=body)
+                    data = r.json() if r.status_code == 200 else {}
+                    if data.get("results") or (data.get("output") or {}).get("results"):
+                        found = ru
+                        break
+                if found:
+                    embed_remember(p.get("id"), rerank_url=found)
+                    msg += "；重排可用" + ("" if found.endswith("/rerank") else f"（接口在 {found}）")
+                else:
+                    msg += "；重排接口没找到或模型名不对，会只用混合检索、不重排"
             else:
                 msg += "；没配重排模型（只用混合检索，不重排）"
-            return True, msg
+            return True, msg + ("。" + "；".join(notes) if notes else "")
     except Exception as e:  # noqa: BLE001
         return False, f"连接失败：{e}"
 

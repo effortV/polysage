@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
@@ -60,7 +61,9 @@ def _env(name: str, default: str = "") -> str:
 
 @dataclass
 class Settings:
-    openalex_api_key: str = field(default_factory=lambda: _env("OPENALEX_API_KEY"))
+    openalex_api_key: str = field(default_factory=lambda: _env("OPENALEX_API_KEY"))          # 旧：单个 key
+    openalex_api_keys_raw: str = field(default_factory=lambda: _env("OPENALEX_API_KEYS"))    # 新：多个 key，逗号分隔，轮换用
+    wiley_tdm_token: str = field(default_factory=lambda: _env("WILEY_TDM_TOKEN"))
     openalex_mailto: str = field(default_factory=lambda: _env("OPENALEX_MAILTO"))
     elsevier_api_key: str = field(default_factory=lambda: _env("ELSEVIER_API_KEY"))
     elsevier_insttoken: str = field(default_factory=lambda: _env("ELSEVIER_INSTTOKEN"))
@@ -168,16 +171,26 @@ class Settings:
         """没配好时知识库检索退化为只用关键词（BM25）。"""
         return bool(self.embed_api_key and self.embed_base_url and self.embed_model)
 
+    @property
+    def openalex_keys(self) -> list[str]:
+        """全部 OpenAlex key（新旧两处合并去重）；一个用完 / 失效了自动换下一个。"""
+        out: list[str] = []
+        for k in re.split(r"[\s,;，；]+", f"{self.openalex_api_keys_raw} {self.openalex_api_key}"):
+            if k and k not in out:
+                out.append(k)
+        return out
+
     def status(self) -> dict[str, bool]:
         """给设置页展示：哪些接口已配置。"""
         return {
             f"当前对话模型：{self.chat_provider_name} · {self.chat_model}": bool(self.chat_api_key),
             f"向量检索：{self.embed_name} · {self.embed_model or '未填模型'}": self.embed_ready,
             "网页搜索 API（博查）": bool(self.bocha_api_key),
-            "OpenAlex": True,  # 无 key 也可用
+            f"OpenAlex（{len(self.openalex_keys)} 个 key）" if self.openalex_keys else "OpenAlex（无 key）": bool(self.openalex_keys),
             "Elsevier Scopus/ScienceDirect": bool(self.elsevier_api_key),
+            "Wiley 全文（TDM）": bool(self.wiley_tdm_token),
+            "Semantic Scholar" + ("（有 key）" if self.semantic_scholar_api_key else ""): True,
             "Unpaywall": bool(self.unpaywall_email),
-            "Semantic Scholar": True,
             "Crossref": True,
             "Google Patents": True,
 

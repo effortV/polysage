@@ -22,12 +22,12 @@ PRESETS: list[dict[str, str]] = [
     {"name": "Kimi（月之暗面）", "base_url": "https://api.moonshot.cn/v1", "model": "kimi-k2", "thinking": "none"},
     {"name": "自定义", "base_url": "", "model": "", "thinking": "none"},
 ]
-# 向量检索：OpenAI 兼容的 /embeddings；重排走 /rerank（硅基流动、Jina 的格式），没有就留空、只做混合检索不重排
+# 向量检索：OpenAI 兼容的 /embeddings；重排自动找接口（/rerank 或百炼的 /compatible-api/v1/reranks），没有就留空、只做混合检索不重排
 EMBED_PRESETS: list[dict[str, Any]] = [
     {"name": "硅基流动", "base_url": "https://api.siliconflow.cn/v1", "embed_model": "BAAI/bge-m3",
      "rerank_model": "BAAI/bge-reranker-v2-m3", "batch": 32},
     {"name": "阿里云百炼（通义）", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "embed_model": "text-embedding-v4",
-     "rerank_model": "", "batch": 10},
+     "rerank_model": "qwen3-rerank", "batch": 10},
     {"name": "智谱", "base_url": "https://open.bigmodel.cn/api/paas/v4", "embed_model": "embedding-3", "rerank_model": "", "batch": 32},
     {"name": "Jina", "base_url": "https://api.jina.ai/v1", "embed_model": "jina-embeddings-v3",
      "rerank_model": "jina-reranker-v2-base-multilingual", "batch": 32},
@@ -247,6 +247,24 @@ def embed_upsert(p: dict[str, Any]) -> str:
 
         set_env({"SILICONFLOW_API_KEY": item["api_key"]})      # 硅基流动的钥匙两边共用
     return item["id"]
+
+
+def embed_lower_batch(pid: str | None, n: int) -> None:
+    """服务报“一次最多 n 条”后记住（只往小改）。"""
+    data = load()
+    for x in data["embed_providers"]:
+        if x["id"] == pid and int(x.get("batch") or 16) > n:
+            x["batch"] = max(1, int(n))
+            save(data)
+
+
+def embed_remember(pid: str | None, **fields: Any) -> None:
+    """记住试出来的东西（如重排接口的实际地址）；改地址 / 模型后重新保存会清掉，下次再试。"""
+    data = load()
+    for x in data["embed_providers"]:
+        if x["id"] == pid and any(x.get(k) != v for k, v in fields.items()):
+            x.update(fields)
+            save(data)
 
 
 def embed_delete(pid: str) -> None:

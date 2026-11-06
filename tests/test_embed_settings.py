@@ -97,3 +97,54 @@ def test_switching_model_pauses_vectors_until_rebuild(monkeypatch, fake_llm):
     finally:
         embedsig.mark("bge-m3")                       # 别影响后面的测试（库是共用的）
         rag_index.invalidate()
+
+
+MAAS = {"name": "通义 MaaS", "base_url": "https://maas.example.com/compatible-mode/v1", "embed_model": "qwen3.7-text-embedding",
+        "rerank_model": "qwen3.7-text-rerank", "api_key": "sk-maas-123456789", "batch": 32}
+
+
+def test_embed_batch_shrinks_to_service_limit(monkeypatch):
+    pid = providers.embed_upsert(MAAS)
+    providers.embed_set_active(pid)
+    sizes = []
+
+    def fake_post(path, payload, timeout=300.0, retries=3, kind="chat"):
+        n = len(payload["input"])
+        sizes.append(n)
+        if n > 20:
+            raise llm.LLMError('通义 MaaS（向量） 400: {"error":{"message":"<400> InternalError.Algo.InvalidParameter: Value error, '
+                               f'batch size is invalid, it should not be larger than 20,cur text batch:{n}."}}}}')
+        return {"data": [{"index": i, "embedding": [1.0, 0.0]} for i in range(n)]}
+
+    monkeypatch.setattr(llm, "_post", fake_post)
+    assert real_embed([f"t{i}" for i in range(45)]).shape == (45, 2)
+    assert sizes == [32, 20, 20, 5]                                                    # 被拒一次后按上限 20 发
+    assert providers.embed_get(pid)["batch"] == 20                                     # 记住了，下次直接 20
+    sizes.clear()
+    real_embed([f"t{i}" for i in range(21)])
+    assert sizes == [20, 1]
+    with pytest.raises(llm.LLMError):                                                  # 别的 400（比如模型名错）照常报错
+        monkeypatch.setattr(llm, "_post", lambda *a, **k: (_ for _ in ()).throw(llm.LLMError("x（向量） 400: model not found")))
+        real_embed(["a", "b"])
+
+
+def test_rerank_finds_compatible_api_path(monkeypatch):
+    pid = providers.embed_upsert(MAAS)
+    providers.embed_set_active(pid)
+    urls = []
+
+    def fake_post(path, payload, timeout=300.0, retries=3, kind="chat"):
+        urls.append(path)
+        if path != "https://maas.example.com/compatible-api/v1/reranks":
+            raise llm.LLMError("通义 MaaS（向量） 404: ")
+        return {"results": [{"index": 1, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.1}]}
+
+    monkeypatch.setattr(llm, "_post", fake_post)
+    assert real_rerank("薄膜", ["钢材", "LLDPE 薄膜"]) == [(1, 0.9), (0, 0.1)]
+    assert urls == ["https://maas.example.com/compatible-mode/v1/rerank", "https://maas.example.com/compatible-api/v1/reranks"]
+    assert providers.embed_get(pid)["rerank_url"] == "https://maas.example.com/compatible-api/v1/reranks"
+    urls.clear()
+    real_rerank("薄膜", ["钢材", "LLDPE 薄膜"])
+    assert urls == ["https://maas.example.com/compatible-api/v1/reranks"]                # 记住了，直接用
+    providers.embed_upsert({**providers.embed_get(pid), "api_key": ""})
+    assert "rerank_url" not in providers.embed_get(pid)                                 # 改过配置就重新找

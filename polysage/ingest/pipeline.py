@@ -78,7 +78,7 @@ def ingest_hit(hit: SearchHit, fetch_fulltext: bool = True) -> tuple[int, str]:
 
 
 def _try_fulltext(hit: SearchHit) -> tuple[str, str, str]:
-    """尽力获取全文：专利页 → OA PDF（自带 / Unpaywall）→ Elsevier 全文。返回 (text, file_path, note)。"""
+    """尽力获取全文：专利页 → OA PDF（自带 / Unpaywall）→ Elsevier 全文 → Wiley TDM。返回 (text, file_path, note)。"""
     from ..sources import fetch as fetcher
 
     if hit.source_type == "patent" and hit.provider == "google_patents":
@@ -130,6 +130,12 @@ def _try_fulltext(hit: SearchHit) -> tuple[str, str, str]:
             ft = get_fulltext(hit.doi)
             if ft:
                 return ft, "", "Elsevier 全文"
+        if settings.wiley_tdm_token:
+            from ..sources import wiley
+
+            got = wiley.get_fulltext(hit.doi)
+            if got:
+                return got[0], got[1], "Wiley 全文（TDM）"
     return "", "", note
 
 
@@ -227,13 +233,15 @@ def embed_missing(batch: int = 64) -> int:
 
 
 def rebuild_vectors() -> dict[str, Any]:
-    """换嵌入模型后：先试一句确认新服务能用，再清掉全部旧向量、用当前模型重建。中途断了再点“补建”能接着做。"""
+    """换嵌入模型后：先用一整批真实切片试通新服务，再清掉全部旧向量、用当前模型重建。中途断了再点“补建”能接着做。"""
     from ..config import settings
     from ..rag import index as rag_index
 
     if not settings.embed_ready:
         raise RuntimeError("向量检索还没配好（地址、密钥、嵌入模型）")
-    probe = llm.embed(["测试"])
+    # 先拿一整批真实切片试（批量上限、长文本都试到；批量太大会自动改小），通过了才清旧向量
+    sample = [r["text"] for r in db.q("SELECT text FROM chunks ORDER BY id LIMIT ?", (max(1, settings.embed_batch),))]
+    probe = llm.embed(sample or ["测试"])
     if probe is None or not len(probe):
         raise RuntimeError("新的向量检索服务没有返回向量")
     db.execute("UPDATE chunks SET embedding=NULL")
