@@ -68,6 +68,7 @@ def _merge(*parts: dict[str, float]) -> dict[str, float]:
 
 ALT_MAX_AGE_DAYS = 30          # 新料的价格超过一个月没更新，不拿来和现有料比（旧价配新价会算出假的“省”）
 ALT_MIN_RATIO = 0.8            # PE 新料价格低于同类现有料八成：多半抽错或不是同一种东西，先询价
+LEAD_MAX_AGE_DAYS = 365        # “询个价就能进方案”的线索：网查参考价超过一年就不算数了
 SAME_FAMILY = {"lldpe": BASE_RESIN, "lldpe_c6": BASE_RESIN, "mlldpe": BASE_RESIN, "ldpe": "LD", "hdpe": HDPE_CODE, "mdpe": HDPE_CODE}
 SLOT_BASE = {**SAME_FAMILY, "recycled_ld": BASE_RECYCLED, "recycled_ll": BASE_RECYCLED, "pcr": BASE_RECYCLED,
              "filler": FILLER_CODE, "clear_filler": FILLER_CODE, "talc": FILLER_CODE}
@@ -103,6 +104,24 @@ def alt_problem(ctx: Ctx, code: str, eff: dict[str, dict[str, Any]] | None = Non
     return ""
 
 
+def _lead_or_problem(ctx: Ctx, code: str, base: str, e: dict[str, Any]) -> str:
+    """比同位置现有料便宜、但没有能下单报价的料：价格像样、不太旧的才算“询价线索”，否则说清哪里不对。"""
+    from datetime import date as _date
+
+    from ..formulation.materials import _as_date
+
+    price, d = ctx.prices[code], _as_date(e.get("date"))
+    if not d or d > _date.today():
+        return "价格没有可信的日期"
+    if (_date.today() - d).days > LEAD_MAX_AGE_DAYS:
+        return f"网查价是 {d} 的（一年多前），要用先询价"
+    fam = SAME_FAMILY.get(ctx.role.get(code, ""))
+    if fam and ctx.prices.get(fam) and price < ALT_MIN_RATIO * ctx.prices[fam]:
+        return f"{price:.0f} 元/吨比同类行情 {ctx.prices[fam]:.0f} 低太多，可能抽错"
+    return (f"线索：{price:.0f} 元/吨（{d} 网查参考），比 {base} 便宜 {(1 - price / ctx.prices[base]) * 100:.0f}%，"
+            "没有能下单的报价")
+
+
 def _usable(ctx: Ctx, exclude: set[str], skipped: dict[str, str] | None = None) -> dict[str, list[str]]:
     """按角色分组的可用料：有价、没被排除、没标“不用”、买得到；新料还要价格新、像样；同一角色里按价格从低到高。"""
     from .. import procurement
@@ -120,9 +139,7 @@ def _usable(ctx: Ctx, exclude: set[str], skipped: dict[str, str] | None = None) 
             base = SLOT_BASE.get(ctx.role.get(code, ""))
             if (skipped is not None and base and base != code and ctx.prices.get(base) and ctx.prices[code] < ctx.prices[base]
                     and not colored(m)):
-                e = eff.get(code) or {}
-                skipped[code] = (f"线索：{ctx.prices[code]:.0f} 元/吨（{str(e.get('date') or '')[:10]} 网查参考），"
-                                 f"比 {base} 便宜 {(1 - ctx.prices[code] / ctx.prices[base]) * 100:.0f}%，没有能下单的报价")
+                skipped[code] = _lead_or_problem(ctx, code, base, eff.get(code) or {})
             continue
         why = alt_problem(ctx, code, eff)
         if why:

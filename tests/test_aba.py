@@ -356,3 +356,21 @@ def test_fixed_thickness_groups_and_colored_materials(aba_prices):
     assert "RBK" not in used and out["skipped"]["RBK"].startswith("有色")
     db.execute("DELETE FROM prices WHERE material_code='RBK'")
     db.execute("DELETE FROM materials WHERE code='RBK'")
+
+
+
+def test_leads_need_plausible_recent_prices(aba_prices):
+    import datetime as _dt
+
+    today = _dt.date.today()
+    MAT.add_price("LD", 12000, "actual", source="测试实价", price_date=today.isoformat())
+    for code, name, price, d in (("LDQ", "某 LDPE 网查价低得离谱", 8000, today), ("RQO", "再生高压一级（旧价）", 5000, today - _dt.timedelta(days=500)),
+                                 ("RQN", "再生高压一级（近价）", 6000, today - _dt.timedelta(days=20))):
+        MAT.upsert_material({"code": code, "name": name, "category": "主体树脂" if code == "LDQ" else "再生料",
+                             "is_recycled": 0 if code == "LDQ" else 1, "grade": "2426H" if code == "LDQ" else ""})
+        MAT.add_price(code, price, "estimate", source="网查参考价（测试）", price_date=d.isoformat())
+    out = O.run({"md_req": 1.0, "td_req": 1.0, "use_new": True})
+    sk = out["skipped"]
+    assert sk["RQN"].startswith("线索") and "低太多" in sk["LDQ"] and "一年多前" in sk["RQO"]
+    db.execute("DELETE FROM prices WHERE material_code IN ('LDQ', 'RQO', 'RQN')")
+    db.execute("DELETE FROM materials WHERE code IN ('LDQ', 'RQO', 'RQN')")

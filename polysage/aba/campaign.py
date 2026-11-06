@@ -179,7 +179,7 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     for n in common:
         W.note(doc, n)
     W.add_table(doc, [{"价格场景": s["label"], "LLDPE(元/吨)": s["prices"].get("LL"), "相对价格卡": f"×{s['ratio']:.3f}",
-                       "说明": "；".join(n for n in s["notes"] if n not in common)[:120]} for s in scens],
+                       "说明": "；".join(n.rstrip("。") for n in s["notes"] if n not in common)[:120]} for s in scens],
                 widths_cm=[3.6, 2.4, 2.0, 9.5], font_size=8.5)
     W.note(doc, "国内只有 LLDPE 有期货（大商所 L）：新料 PE 按 1.0 联动，再生料按 0.6 跟随，填充料和助剂不变。")
     if cleaned:
@@ -250,6 +250,9 @@ def report_docx(round_no: int, *, market: dict[str, Any] | None = None, discover
     def verdict(code: str) -> str:
         if code in in_best:
             return "进入了更省的方案"
+        flag = str((ctx.mats.get(code) or {}).get("use_flag") or "")
+        if flag.startswith("否"):
+            return "标了不用" + flag[1:]
         if code not in ctx.prices:
             return "缺价"
         w = skipped.get(code)
