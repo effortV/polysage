@@ -12,7 +12,7 @@ import polysage.rag.answer as RAG
 from polysage.rag.index import search as kb_search
 from polysage.sources import DEFAULT_PROVIDERS, PROVIDERS, search_all
 
-ui.page_header("知识库", "文献、专利、TDS 与网页资料；检索问答带出处。")
+ui.page_header("资料库", "研发流水线和助手找到的文献、专利、TDS、网页资料；可以直接检索提问，回答带出处。")
 
 stats = db.kb_stats()
 metric_cols = ui.hrow(6)

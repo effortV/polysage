@@ -1,6 +1,8 @@
 """base 录入与过关线、双通道数据回灌、试验包、价格撤销、模型切换。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from conftest import seed_library
 
 import pandas as pd
@@ -75,14 +77,23 @@ def test_price_undo_and_basis():
     assert b["n_actual"] + b["n_estimate"] + b["n_missing"] == len(MAT.list_materials(active_only=True))
 
 
-def test_llm_profile_switch(monkeypatch):
+def test_llm_profile_switch(monkeypatch, home):
+    """旧 .env 的两套配置迁移成服务商列表；切换后 settings 跟着走。"""
+    import tempfile
+
+    from polysage import providers
+
+    path = Path(tempfile.mkdtemp(dir=home)) / "migrated.json"
+    monkeypatch.setattr(providers, "_path", lambda: path)
     monkeypatch.setenv("LLM_PROFILE", "zju")
     monkeypatch.setenv("ZJU_API_KEY", "k")
-    monkeypatch.setenv("ZJU_CHAT_MODEL", "zju-qwen")
+    monkeypatch.setenv("ZJU_BASE_URL", "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1")
+    monkeypatch.setenv("ZJU_CHAT_MODEL", "deepseek-v4-pro")
     monkeypatch.setenv("ZJU_SUPPORTS_THINKING", "0")
+    data = providers.load()
+    assert [p["id"] for p in data["providers"]] == ["siliconflow", "zju"] and data["active"] == "zju"
+    assert providers.get("zju")["name"] == "通义千问" and providers.get("zju")["thinking"] == "none"
     s = Settings()
-    assert s.chat_model == "zju-qwen" and s.chat_base_url.startswith("https://api.zjumembrane.cn") and s.chat_api_key == "k"
-    assert s.chat_supports_thinking is False
-    monkeypatch.setenv("LLM_PROFILE", "siliconflow")
-    s2 = Settings()
-    assert s2.chat_model == s2.sf_chat_model and s2.chat_supports_thinking is True
+    assert s.chat_model == "deepseek-v4-pro" and s.chat_api_key == "k" and s.chat_supports_thinking is False
+    s.llm_profile = "siliconflow"
+    assert s.chat_model == "deepseek-ai/DeepSeek-V4-Pro" and s.chat_supports_thinking is True

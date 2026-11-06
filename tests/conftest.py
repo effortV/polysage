@@ -176,6 +176,22 @@ def fake_sources(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_config(monkeypatch):
+    """测试绝不碰真的 .env 和服务商配置：都指到临时目录，只配一家没密钥的硅基流动（密钥走 settings.sf_api_key）。"""
+    from polysage import envfile, providers
+    from polysage.config import settings
+
+    tmp = Path(tempfile.mkdtemp(prefix="cfg_", dir=_TMP))      # 不用 pytest 的 tmp_path：这台机器上它的根目录没权限
+    monkeypatch.setattr(envfile, "ENV_PATH", tmp / ".env")
+    path = tmp / "llm_providers.json"
+    monkeypatch.setattr(providers, "_path", lambda: path)
+    providers.save({"providers": [{"id": "siliconflow", "name": "硅基流动", "base_url": "https://api.siliconflow.cn/v1",
+                                   "api_key": "", "model": "deepseek-ai/DeepSeek-V4-Pro", "thinking": "enable_thinking"}],
+                    "active": "siliconflow"})
+    monkeypatch.setattr(settings, "llm_profile", "siliconflow")
+
+
+@pytest.fixture(autouse=True)
 def _no_paid_search(monkeypatch):
     """测试一律不走付费搜索 API：跑一次全量测试不该花钱，也不该被网络拖慢。"""
     from polysage.config import settings

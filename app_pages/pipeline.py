@@ -9,7 +9,7 @@ from polysage import jobs, ui
 from polysage.config import settings
 from polysage.pipeline import state, task
 
-ui.page_header("研发流水线", "资料采集、机理分析、报告与实验闭环；出方案请用「配方推荐」。")
+ui.page_header("研发流水线", "文献采集、机理分析、找新料、报告——一般由配方助手按需自动启动，这里看进度和产出，也可以手动跑。")
 
 t = task.load()
 with ui.expander("任务书"):

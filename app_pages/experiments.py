@@ -10,7 +10,7 @@ from polysage.aba import experiments as E
 from polysage.aba import rules as R
 from polysage.aba.model import layer_text
 
-ui.page_header("实验与模型", "ABA 试验闭环：出试验方案 → 做实验回填 → 用数据校准系数 → 推荐下一轮。")
+ui.page_header("实验与校准", "出试验方案 → 按投料单打样 → 回填实测 → 校准系数 → 推荐下一轮。实验越多，方案预测越准。")
 
 _trials = E.trials()
 _measured = E.measured()

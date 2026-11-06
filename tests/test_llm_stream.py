@@ -54,9 +54,11 @@ def test_thinking_budget_adds_to_max_tokens_and_zju_uses_template_kwargs(stream_
     seen = stream_client([{"choices": [{"delta": {"content": "{}"}, "finish_reason": "stop"}]}])
     llm.chat([{"role": "user", "content": "x"}], max_tokens=1500, thinking=1024)
     assert seen["json"]["max_tokens"] == 2524 and seen["json"]["thinking_budget"] == 1024
+    from polysage import providers
+
+    providers.upsert({"id": "zju", "name": "vLLM 部署", "base_url": "https://vllm.example/v1", "model": "zju-qwen",
+                      "api_key": "fake", "thinking": "chat_template_kwargs"})
     monkeypatch.setattr(settings, "llm_profile", "zju")
-    monkeypatch.setattr(settings, "zju_api_key", "fake")
-    monkeypatch.setattr(settings, "zju_supports_thinking", True)
     llm.chat([{"role": "user", "content": "x"}], max_tokens=100, thinking=1024)
     assert seen["json"]["chat_template_kwargs"] == {"enable_thinking": False} and "enable_thinking" not in seen["json"]
     llm.chat([{"role": "user", "content": "x"}], max_tokens=100, thinking=True)
@@ -120,8 +122,11 @@ def test_stream_retries_on_ssl_eof_then_falls_back_to_non_stream(monkeypatch):
 
 def test_chat_answer_falls_back_when_empty(monkeypatch):
     """模型空手而回：先换问法，再换另一个模型，最后也要给可读提示。"""
+    from polysage import providers
+
     monkeypatch.setattr(settings, "sf_api_key", "fake")
-    monkeypatch.setattr(settings, "zju_api_key", "fake")
+    providers.upsert({"id": "zju", "name": "备用服务", "base_url": "https://zju.example/v1", "model": "zju-qwen",
+                      "api_key": "fake", "thinking": "none"})
     monkeypatch.setattr(settings, "llm_profile", "zju")
     seen: list[tuple[str, int]] = []
 

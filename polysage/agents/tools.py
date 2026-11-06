@@ -663,3 +663,5 @@ def save_review(title: str, content: str):
 
 # ABA 三层膜的工具（分档寻优、评估、价格场景、实验闭环、系数表）
 from . import tools_aba  # noqa: E402,F401
+# 调度后台工作：找新材料、文献调研、更新行情、查进度
+from . import tools_ops  # noqa: E402,F401

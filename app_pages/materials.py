@@ -8,7 +8,7 @@ from polysage.config import settings
 from polysage.formulation import library as L
 from polysage.formulation import materials as MAT
 
-ui.page_header("原料与价格", "原料库、价格卡与联动、配方库、候选生成、约束。")
+ui.page_header("原料与配方库", "原料库（含智能体找到的新料）、价格卡、所有算过和存下来的配方。")
 MAT.seed_materials()
 L.seed_top20()
 

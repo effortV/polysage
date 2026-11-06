@@ -72,68 +72,29 @@ def running_label(text: str) -> str:
 
 _STYLE = """
 <style>
-/* 隐藏 Streamlit 自带的菜单/页脚/部署按钮 */
+/* 客户用：不显示开发者菜单、部署按钮、顶部彩条 */
 #MainMenu, footer, .stAppDeployButton, [data-testid="stDecoration"] {display: none !important;}
 header[data-testid="stHeader"] {background: transparent;}
+.block-container {padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1320px;}
+[data-testid="stCaptionContainer"] {color: #6B7480 !important;}
 
-/* 版面 */
-.block-container {padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1380px;}
-h1 {font-size: 1.55rem !important; font-weight: 600 !important; letter-spacing: 0.01em; margin-bottom: 0.4rem !important;}
-h2 {font-size: 1.15rem !important; font-weight: 600 !important; margin-top: 1.2rem !important;}
-h3 {font-size: 1.0rem !important; font-weight: 600 !important;}
-p, li, .stMarkdown {line-height: 1.55;}
-[data-testid="stCaptionContainer"] {color: #6B7280 !important;}
+/* logo：1.45 是 data-testid=stLogo，1.6x 是 stSidebarLogo，类名 .stLogo 两版都有 */
+img.stLogo, img[data-testid="stLogo"], img[data-testid="stSidebarLogo"] {height: 3.6rem !important; width: auto !important; max-width: 100% !important;}
 
-/* 侧栏 */
-section[data-testid="stSidebar"] {background: #F3F5F7; border-right: 1px solid #E5E7EB;}
-/* logo 放大：1.45 的 img 是 data-testid=stLogo，1.6x 改成 stSidebarLogo，类名 .stLogo 两版都有 */
-img.stLogo, img[data-testid="stLogo"], img[data-testid="stSidebarLogo"] {height: 4rem !important; width: auto !important; max-width: 100% !important;}
-section[data-testid="stSidebar"] .stMarkdown h3 {font-size: 0.95rem;}
-.ps-brand {font-weight: 700; font-size: 1.15rem; color: #1F4E79; letter-spacing: 0.04em; margin: 0.2rem 0 0 0;}
-.ps-brand-sub {color: #6B7280; font-size: 0.78rem; margin-bottom: 0.9rem;}
-.ps-status {font-size: 0.78rem; color: #4B5563; line-height: 1.5; border-top: 1px solid #E5E7EB; padding-top: 0.6rem; margin-top: 0.6rem;}
-
-/* 指标 */
-[data-testid="stMetric"] {background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 10px; padding: 0.6rem 0.9rem;}
-[data-testid="stMetricLabel"] {color: #6B7280 !important; font-size: 0.78rem !important;}
-[data-testid="stMetricValue"] {font-size: 1.25rem !important; font-weight: 600 !important; color: #1F2933 !important;}
-
-/* 标签页 */
-button[data-baseweb="tab"] {font-weight: 500; padding: 0.4rem 0.9rem;}
-[data-baseweb="tab-highlight"] {background-color: #1F4E79 !important;}
-
-/* 按钮 */
-.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {border-radius: 6px; border: 1px solid #D1D5DB; padding: 0.35rem 0.9rem;}
-.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {background: #1F4E79; border-color: #1F4E79;}
-.stButton > button[kind="primary"]:hover, .stFormSubmitButton > button[kind="primary"]:hover {background: #173B5C; border-color: #173B5C;}
-
-/* 提示条：更克制 */
-[data-testid="stAlert"] {border-radius: 8px; padding: 0.55rem 0.9rem;}
-
-/* 输入框 */
-[data-baseweb="input"] > div, [data-baseweb="select"] > div, [data-baseweb="textarea"] > div {border-radius: 6px;}
-
-/* 聊天 */
-[data-testid="stChatMessage"] {border-radius: 10px; padding: 0.6rem 0.9rem;}
-[data-testid="stChatInput"] {border-radius: 10px;}
-
-/* 数据表工具条淡化 */
-[data-testid="stElementToolbar"] {opacity: 0.6;}
-
-/* 侧栏「后台运行」面板 */
-.ps-activity {font-size: 0.76rem; color: #4B5563; line-height: 1.5; border-top: 1px solid #E5E7EB; padding-top: 0.6rem; margin-top: 0.8rem;}
-.ps-activity-head {display: flex; justify-content: space-between; font-weight: 600; color: #1F2933; margin-bottom: 0.25rem;}
+/* 侧栏「后台运行」面板（自绘 HTML） */
+.ps-activity {font-size: 0.76rem; color: #4B5563; line-height: 1.5; border-top: 1px solid #E2E6EC; padding-top: 0.6rem; margin-top: 0.8rem;}
+.ps-activity-head {display: flex; justify-content: space-between; font-weight: 600; color: #1C2430; margin-bottom: 0.25rem;}
 .ps-activity-up {font-weight: 400; color: #9CA3AF;}
 .ps-activity-row {margin: 0.1rem 0;}
 .ps-dot {display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #9CA3AF; vertical-align: 1px;}
-.ps-dot.run {background: #1F4E79; animation: ps-pulse 1.4s ease-in-out infinite;}
-.ps-dot.err {background: #B91C1C;}
-.ps-dot.pause {background: #D97706;}
+.ps-dot.run {background: #1E4B7A; animation: ps-pulse 1.4s ease-in-out infinite;}
+.ps-dot.err {background: #B3261E;}
+.ps-dot.pause {background: #B86E00;}
 .st-key-ps_ctl .stButton > button {padding: 0.15rem 0.6rem; font-size: 0.76rem; min-height: 1.7rem; line-height: 1.2;}
 @keyframes ps-pulse {0%, 100% {opacity: 1;} 50% {opacity: 0.3;}}
-.ps-activity-log {margin-top: 0.4rem; padding-top: 0.35rem; border-top: 1px dashed #E5E7EB; color: #6B7280; font-family: ui-monospace, Consolas, monospace; font-size: 0.7rem; line-height: 1.45;}
+.ps-activity-log {margin-top: 0.4rem; padding-top: 0.35rem; border-top: 1px dashed #E2E6EC; color: #6B7480; font-family: ui-monospace, Consolas, monospace; font-size: 0.7rem; line-height: 1.45;}
 .ps-activity-log .t {color: #9CA3AF; margin-right: 6px;}
-.ps-activity-log .bad {color: #B91C1C;}
+.ps-activity-log .bad {color: #B3261E;}
 </style>
 """
 
@@ -252,25 +213,29 @@ def sidebar_activity() -> None:
         _panel()
 
 
-def password_gate(password: str | None) -> None:
-    """访问口令：没设口令直接放行；设了就在本会话首次打开时要求输入，之后不再问。"""
-    import hmac
+def password_gate(_legacy: str | None = None) -> None:
+    """访问密码：没设直接放行；设了就在本会话首次打开时要求输入，之后不再问（比对哈希）。"""
+    from . import auth
 
-    if not password or st.session_state.get("_authed"):
+    if not auth.password_required() or st.session_state.get("_authed"):
         return
-    st.markdown("<h1>HDU×恒诺 - 包装膜（AI4S）</h1>", unsafe_allow_html=True)
-    with st.form("login"):
-        pw = st.text_input("访问口令", type="password")
-        ok = st.form_submit_button("进入", type="primary")
-    if ok:
-        if hmac.compare_digest(pw.encode("utf-8"), password.encode("utf-8")):
-            st.session_state["_authed"] = True
-            st.rerun()
-        st.error("口令不对。")
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        st.space("large")
+        st.markdown("### HDU×恒诺 · 包装膜配方平台")
+        st.caption("请输入访问密码")
+        with st.form("login", border=True):
+            pw = st.text_input("访问密码", type="password", label_visibility="collapsed", placeholder="访问密码")
+            ok = st.form_submit_button("进入", type="primary", width="stretch")
+        if ok:
+            if auth.check_password(pw):
+                st.session_state["_authed"] = True
+                st.rerun()
+            st.error("密码不对。")
     st.stop()
 
 
 def page_header(title: str, subtitle: str | None = None) -> None:
-    st.markdown(f"<h1>{title}</h1>", unsafe_allow_html=True)
+    st.title(title, anchor=False)
     if subtitle:
-        st.markdown(f'<div style="color:#6B7280;font-size:0.9rem;margin:-0.2rem 0 1rem 0">{subtitle}</div>', unsafe_allow_html=True)
+        st.caption(subtitle)

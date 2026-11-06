@@ -70,8 +70,11 @@ class Settings:
     # 搜索 API（服务器 IP 被必应降级 / 搜狗 403 / 360 验证码时的正路，任配一个即可）
     bocha_api_key: str = field(default_factory=lambda: _env("BOCHA_API_KEY"))
     zhipu_api_key: str = field(default_factory=lambda: _env("ZHIPU_API_KEY"))
-    # 访问口令：设置后打开界面要先输入；对外网开放（隧道）前必须设置
+    # 访问密码：只存哈希（APP_PASSWORD_HASH）；旧的明文 APP_PASSWORD 仍兼容，改一次密码后就换成哈希
     app_password: str = field(default_factory=lambda: _env("APP_PASSWORD"))
+    app_password_hash: str = field(default_factory=lambda: _env("APP_PASSWORD_HASH"))
+    # 核心密钥的哈希：改访问密码前必须输对
+    admin_key_hash: str = field(default_factory=lambda: _env("ADMIN_KEY_HASH"))
 
     sf_api_key: str = field(default_factory=lambda: _env("SILICONFLOW_API_KEY"))
     sf_base_url: str = field(default_factory=lambda: _env("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"))
@@ -89,23 +92,39 @@ class Settings:
     http_timeout: float = 40.0
     user_agent: str = "PolySage/0.1 (packaging-film R&D; contact via OPENALEX_MAILTO)"
 
-    # ---- 当前对话模型（按 llm_profile 解析）----
+    # ---- 当前对话模型：llm_profile = 服务商 id，从 data/llm_providers.json 解析（设置页随便填）----
+    @property
+    def chat_provider(self) -> dict:
+        from .providers import resolve
+
+        return resolve(self.llm_profile)
+
     @property
     def chat_api_key(self) -> str:
-        return self.zju_api_key if self.llm_profile == "zju" else self.sf_api_key
+        from .providers import effective_key
+
+        return effective_key(self.chat_provider)
 
     @property
     def chat_base_url(self) -> str:
-        return self.zju_base_url if self.llm_profile == "zju" else self.sf_base_url
+        return self.chat_provider.get("base_url", "")
 
     @property
     def chat_model(self) -> str:
-        return self.zju_chat_model if self.llm_profile == "zju" else self.sf_chat_model
+        return self.chat_provider.get("model", "")
+
+    @property
+    def chat_provider_name(self) -> str:
+        return self.chat_provider.get("name", self.llm_profile)
+
+    @property
+    def chat_thinking_style(self) -> str:
+        """none / enable_thinking / chat_template_kwargs：这家接口认哪种思考开关。"""
+        return self.chat_provider.get("thinking", "none")
 
     @property
     def chat_supports_thinking(self) -> bool:
-        """是否向对话接口发送 enable_thinking / thinking_budget（硅基流动 DeepSeek 支持；其他服务未知时不发）。"""
-        return self.zju_supports_thinking if self.llm_profile == "zju" else True
+        return self.chat_thinking_style != "none"
 
     @property
     def llm_ready(self) -> bool:
@@ -119,29 +138,29 @@ class Settings:
     def status(self) -> dict[str, bool]:
         """给设置页展示：哪些接口已配置。"""
         return {
-            f"当前对话模型：{self.chat_model}（{self.llm_profile}）": bool(self.chat_api_key),
-            "SiliconFlow (DeepSeek / bge-m3 向量)": bool(self.sf_api_key),
-            "ZJU (zju-qwen)": bool(self.zju_api_key),
+            f"当前对话模型：{self.chat_provider_name} · {self.chat_model}": bool(self.chat_api_key),
+            "向量检索（硅基流动 bge-m3）": bool(self.sf_api_key),
+            "网页搜索 API（博查）": bool(self.bocha_api_key),
             "OpenAlex": True,  # 无 key 也可用
             "Elsevier Scopus/ScienceDirect": bool(self.elsevier_api_key),
             "Unpaywall": bool(self.unpaywall_email),
             "Semantic Scholar": True,
             "Crossref": True,
             "Google Patents": True,
-            "网页搜索 (Tavily / DuckDuckGo)": True,
+
         }
 
 
 settings = Settings()
 
 
-def reload_settings() -> Settings:
+def reload_settings(env_path: Path | None = None) -> Settings:
     """重新读取 .env（设置页保存后调用）。
 
     就地更新同一个 settings 对象：其他模块是 `from .config import settings` 引用的同一实例，
     若这里重新赋值，llm/sources 等模块仍会拿着旧对象（旧密钥）。
     """
-    load_dotenv(ROOT / ".env", override=True)
+    load_dotenv(env_path or (ROOT / ".env"), override=True)
     fresh = Settings()
     for f in fields(Settings):
         setattr(settings, f.name, getattr(fresh, f.name))

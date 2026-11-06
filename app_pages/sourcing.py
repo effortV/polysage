@@ -9,7 +9,7 @@ from polysage import activity, daily_quotes, db, forecast, jobs, sourcing, ui
 from polysage.formulation import materials as MAT
 from polysage.formulation import materials as MAT
 
-ui.page_header("供应商寻源", "为每种原料找厂商与报价，和价格卡比较，生成询价清单；询价核实后一键登记为实价。")
+ui.page_header("价格与供应商", "贸易商日报、网查对照、价格预判、供应商与询价清单；登记的价格会自动同步到所有方案。")
 MAT.seed_materials()
 
 mats = MAT.list_materials(active_only=True)

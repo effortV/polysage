@@ -3,16 +3,19 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from polysage import chat_widget, ui
+from polysage import chat_widget, jobs, ui
 from polysage.agents import runner
 from polysage.aba import optimize as O
 from polysage.aba import prices as P
 from polysage.aba import report as RP
 from polysage.aba import rules as R
 from polysage.aba.model import Ctx, Design, base_design
+from polysage.aba.model import layer_text
 from polysage.formulation import materials as MAT
 
-ui.page_header("配方推荐", "ABA 三层膜：按纵横拉断力和透光档，在买得到的料里找元/吨最低的方案；价格变了即时重算。")
+_HAS_DELTA_ARROW = ui._has_param(st.metric, "delta_arrow")
+
+ui.page_header("配方助手", "直接说要什么——要方案、问价格、找新材料、出实验——助手会自己去算、去查，需要时在后台调度研发流水线和行情更新。")
 
 
 @st.cache_resource(show_spinner=False)
@@ -27,57 +30,109 @@ _ref = base_design()
 _ref_ev = _ctx.evaluate(_ref, _ref)
 _ll = P.price_row("LL")
 _cal = R.calibration()
-k1, k2, k3, k4 = ui.hrow(4)
-k1.metric("现配方", "A/B 基底 LL 67 / 再生 33", help=_ref.text())
-k2.metric("现配方成本", f"{_ref_ev['cost']:,.0f} 元/吨" if _ref_ev["cost"] else "缺价格", help="不加填充、4.5 丝；按价格卡当前价")
-k3.metric("LLDPE 报价日", (_ll or {}).get("price_date") or "—", help=(_ll or {}).get("source") or "")
-k4.metric("性能模型", f"已校准 {_cal.get('n')} 组" if _cal else "定性先验", help="回填实验数据后到「实验与模型」校准")
-st.caption("性能看三项：纵向拉断力、横向拉断力（相对现配方的倍数；校准后给 N）、透光（0 一般 / 1 好 / 2 很好）。"
-           "成本按吨；厚度可调，拉断力与厚度成正比，越厚透光越差。")
+_job = jobs.info()
 
-tab_chat, tab_opt, tab_eval, tab_coef = st.tabs(["对话", "分档最低成本", "评估一个配方", "系数表"],
+
+def _price_age() -> tuple[str, str | None]:
+    from datetime import date
+
+    d = P._as_date((_ll or {}).get("price_date"))
+    if not d:
+        return "—", None
+    days = (date.today() - d).days
+    return str(d), (f"{days} 天前" if days > 0 else "今天")
+
+
+_pdate, _page = _price_age()
+with st.container(horizontal=True):
+    st.metric("现配方成本", f"{_ref_ev['cost']:,.0f} 元/吨" if _ref_ev["cost"] else "缺价格", border=True,
+              help=f"{_ref.text()}；按价格卡当前价")
+    st.metric("LLDPE 报价日", _pdate, delta=_page, delta_color="off", border=True,
+              **({"delta_arrow": "off"} if _HAS_DELTA_ARROW else {}),
+              help="价格卡上 LLDPE 那条报价的日期；超过两周建议更新贸易商日报，或让助手“按期货更新价格”")
+    st.metric("性能模型", f"已校准 {_cal.get('n')} 组" if _cal else "定性先验", border=True,
+              help="还没做实验时用系数表预测；回填实验数据并校准后会越来越准")
+    st.metric("后台任务", jobs.JOB_NAMES.get(_job["name"], _job["name"]) if _job else "空闲",
+              delta=f"{_job['elapsed'] / 60:.0f} 分钟" if _job else None, delta_color="off", border=True,
+              **({"delta_arrow": "off"} if _HAS_DELTA_ARROW else {}),
+              help="找新材料、文献调研、更新行情都在后台跑；进度可以直接问助手")
+
+with st.container(horizontal=True):
+    for page_path, label, icon, note in (
+            ("app_pages/sourcing.py", "① 更新价格", ":material/payments:", "贴贸易商日报，或让助手按期货更新"),
+            ("app_pages/agent.py", "② 要方案", ":material/auto_awesome:", "在下面直接问，或用「分档计算」"),
+            ("app_pages/experiments.py", "③ 做实验", ":material/science:", "出试验方案，按投料单打样"),
+            ("app_pages/experiments.py", "④ 回填校准", ":material/fact_check:", "上传实测，模型越用越准")):
+        with st.container(border=True):
+            st.page_link(page_path, label=label, icon=icon)
+            st.caption(note)
+
+tab_chat, tab_opt, tab_eval, tab_coef = st.tabs(["对话", "分档计算", "评估一个配方", "系数表"],
                                                  key="agent-workspace-tab", on_change="rerun")
 
 REQ_OPTIONS = {"不降（≥ 现配方）": 1.0, "提升 5%": 1.05, "提升 10%": 1.10, "允许降 5%": 0.95, "允许降 10%": 0.90, "不管": None}
 GRADE_OPTIONS = {"三档都给": None, "至少 一般": 0, "至少 好": 1, "至少 很好": 2}
+GRADE_COLOR = {2: "blue", 1: "green", 0: "gray"}
 
 
 def _render_tab_chat() -> None:
     sid = chat_widget.get_or_create_session("advisor", "advisor_session")
-    c1, _ = st.columns([1, 5])
-    if c1.button("新对话", key="new_advisor"):
-        st.session_state["advisor_session"] = runner.create_session("advisor")
-        st.rerun()
-    chat_widget.render_session_chat(sid, "说要求：性能不降最低多少钱 / 三档透光各给最便宜的 / 按期货价算…", key="advisor_chat",
-                                    examples=chat_widget.ADVISOR_EXAMPLES)
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        if st.button("新对话", key="new_advisor", icon=":material/add_comment:"):
+            st.session_state["advisor_session"] = runner.create_session("advisor")
+            st.rerun()
+    chat_widget.render_session_chat(sid, "说要求：性能不降最低多少钱 / 三档透光各给最便宜的 / 现在价格多少 / 有没有新材料…",
+                                    key="advisor_chat", examples=chat_widget.ADVISOR_EXAMPLES)
+
+
+def _card(ev: dict, g: int, gname: str) -> None:
+    """一档的第 1 名：一张卡片看全成本、性能、厚度与依据。"""
+    with st.container(border=True):
+        st.markdown(f":{GRADE_COLOR[g]}-badge[透光 ≥{R.GRADE_LABEL[g]}]　" + (f":orange-badge[把握 {ev['confidence']}]"
+                                                                             if ev["confidence"] in ("低", "中低") else
+                                                                             f":gray-badge[把握 {ev['confidence']}]"))
+        # 降本为绿、变贵为红（delta 文本本身已经写明“降本 / 贵”）
+        kw = {"delta_arrow": "off"} if _HAS_DELTA_ARROW else {}
+        st.metric("元/吨", f"{ev['cost']:,.0f}", delta=O.saving_text(ev.get("saving_pct")),
+                  delta_color="normal" if (ev.get("saving_pct") or 0) >= 0 else "inverse", **kw)
+        d = ev["design"]
+        st.markdown(f"**A {d.a_ratio:.0%}**：{layer_text(d.a)}")
+        st.markdown(f"**B {1 - d.a_ratio:.0%}**：{layer_text(d.b)}")
+        st.caption(f"{d.thickness:g} 丝 · 克重 {ev['gsm']:.0f} g/m² · 约 {ev.get('cost_m2') or 0:.3f} 元/m²")
+        st.caption(f"纵向拉断力 {ev['md_rel']:.2f}× · 横向 {ev['td_rel']:.2f}×（相对现配方）"
+                   + (f" · 比现有料最优 {ev['vs_current']:+.0f}" if gname == "加新料" and ev.get("vs_current") is not None else ""))
+        with st.popover("依据", icon=":material/info:"):
+            for x in ev.get("drivers") or []:
+                st.caption("· " + x)
 
 
 def _result_tables(out: dict) -> None:
     ref = out["ref"]
-    st.markdown(f"**价格**：{out['scenario']['label']}　**现配方**：{ref['text']}，{ref['cost'] or '缺价'} 元/吨，"
-                f"克重 {ref['gsm']} g/m²，透光 {ref['grade_label']}")
-    for n in out["notes"]:
-        st.caption(n)
+    st.caption(f"价格：{out['scenario']['label']}　·　现配方：{ref['text']}，{ref['cost'] or '缺价'} 元/吨，"
+               f"克重 {ref['gsm']} g/m²，透光 {ref['grade_label']}")
     rows = O.rows(out)
-    for gname in out["groups"]:
-        sub = [r for r in rows if r["分组"] == gname]
-        st.markdown(f"##### {gname}")
-        if not sub:
+    for gname, per in out["groups"].items():
+        st.subheader("只用现有料" if gname == "现有料" else "加 / 换新料", anchor=False)
+        firsts = [(g, items[0]) for g, items in per.items() if items]
+        if not firsts:
             st.info("加/换新料都不比只用现有料更省。" if gname == "加新料"
                     else "没有满足要求的方案：放宽拉断力要求、加大厚度上限，或降低透光要求再试。")
             continue
-        show = pd.DataFrame([{k: v for k, v in r.items() if k not in ("分组", "依据", "_ev")
-                              and not (k == "比现有料最优" and gname == "现有料")} for r in sub])
-        st.dataframe(show, hide_index=True, **ui.WIDE,
-                     column_config={"元/吨": st.column_config.NumberColumn(format="%.0f"),
-                                    "元/m²(参考)": st.column_config.NumberColumn(format="%.3f"),
-                                    "纵向拉断力": st.column_config.NumberColumn(format="%.2f×"),
-                                    "横向拉断力": st.column_config.NumberColumn(format="%.2f×")})
-        with ui.expander(f"{gname}：每个方案的依据"):
-            for r in sub:
-                st.markdown(f"**{r['透光要求']} #{r['名次']}**　{r['配方']}")
-                for d in r["_ev"].get("drivers") or []:
-                    st.caption("· " + d)
+        cols = st.columns(len(firsts))
+        for col, (g, ev) in zip(cols, firsts):
+            with col:
+                _card(ev, g, gname)
+        sub = [r for r in rows if r["分组"] == gname]
+        with st.expander(f"全部备选（{len(sub)} 个）", icon=":material/table_rows:"):
+            show = pd.DataFrame([{k: v for k, v in r.items() if k not in ("分组", "依据", "_ev")
+                                  and not (k == "比现有料最优" and gname == "现有料")} for r in sub])
+            st.dataframe(show, hide_index=True, **ui.WIDE,
+                         column_config={"元/吨": st.column_config.NumberColumn(format="%.0f"),
+                                        "元/m²(参考)": st.column_config.NumberColumn(format="%.3f"),
+                                        "纵向拉断力": st.column_config.NumberColumn(format="%.2f×"),
+                                        "横向拉断力": st.column_config.NumberColumn(format="%.2f×")})
+    for n in out["notes"]:
+        st.caption(n)
 
 
 def _render_tab_opt() -> None:

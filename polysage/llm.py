@@ -42,7 +42,7 @@ def _headers(kind: str = "chat") -> dict[str, str]:
     key = settings.chat_api_key if kind == "chat" else settings.sf_api_key
     if not key:
         if kind == "chat":
-            raise LLMNotConfigured(f"当前对话模型 {settings.chat_model}（{settings.llm_profile}）未配置密钥，请在“设置”页填写。")
+            raise LLMNotConfigured(f"当前对话模型 {settings.chat_provider_name} · {settings.chat_model} 没有填密钥，请在“设置”页填写。")
         raise LLMNotConfigured("未配置 SILICONFLOW_API_KEY（向量/重排需要）。")
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
@@ -57,9 +57,10 @@ def _thinking_payload(thinking: bool | int | None) -> dict[str, Any]:
     ZJU（vLLM 部署的 Qwen）不认顶层 enable_thinking，只认 chat_template_kwargs，而且不能限预算：
     不限预算的思考动辄上百秒、还会把 max_tokens 吃光导致答案为空，所以 ZJU 上只有 thinking=True 才开思考。
     """
-    if not settings.chat_supports_thinking:
+    style = settings.chat_thinking_style
+    if style == "none":
         return {}
-    if settings.llm_profile == "zju":
+    if style == "chat_template_kwargs":
         return {"chat_template_kwargs": {"enable_thinking": thinking is True}}
     if thinking is None or thinking is False:
         return {"enable_thinking": False}
@@ -90,7 +91,7 @@ def _stream_once(url: str, payload: dict[str, Any], timeout: float) -> dict[str,
             if r.status_code == 429 or r.status_code >= 500:
                 raise _Retryable(f"{r.status_code}: {r.read()[:300]!r}")
             if r.status_code >= 400:
-                raise LLMError(f"{settings.llm_profile} {r.status_code}: {r.read()[:500]!r}")
+                raise LLMError(f"{settings.chat_provider_name} {r.status_code}: {r.read()[:500]!r}")
             for line in r.iter_lines():
                 if not line or not line.startswith("data:"):
                     continue
@@ -179,7 +180,7 @@ def _post_raw(path: str, payload: dict[str, Any], timeout: float, retries: int, 
                 time.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"{settings.llm_profile if kind == 'chat' else 'SiliconFlow'} {r.status_code}: {r.text[:500]}")
+                raise LLMError(f"{settings.chat_provider_name if kind == 'chat' else '硅基流动（向量）'} {r.status_code}: {r.text[:500]}")
             return r.json()
         except _NET_ERRORS as e:
             # 超时 / 断连 / SSL EOF / 代理掐断：退避重试
@@ -247,11 +248,10 @@ def chat(
 
 
 def other_profile() -> str | None:
-    """另一个配好的对话模型（siliconflow ↔ zju），没有就 None。"""
-    cur = settings.llm_profile
-    other = "zju" if cur == "siliconflow" else "siliconflow"
-    key = settings.zju_api_key if other == "zju" else settings.sf_api_key
-    return other if key else None
+    """备用模型：设置里除当前外第一家配齐了的服务商（没有就 None）。"""
+    from .providers import fallback
+
+    return fallback(settings.llm_profile)
 
 
 ANSWER_MAX_TOKENS = 6000          # 最终作答：Top10 表格 + 采购清单，3000 根本不够
@@ -306,7 +306,9 @@ def chat_answer(messages: list[dict[str, Any]], **kw: Any) -> ChatResult:
         finally:
             settings.llm_profile = cur
         if res2.content.strip():
-            res2.content += f"\n\n（本条由备用模型 {other} 作答：当前模型连续返回空内容）"
+            from .providers import get as _get_provider
+
+            res2.content += f"\n\n（本条由备用模型 {(_get_provider(other) or {}).get('name', other)} 作答：当前模型连续返回空内容）"
             return res2
     return ChatResult(content="（模型连续返回空内容：已换问法与备用模型重试仍无输出。可在「设置」页切换对话模型，"
                               "或把问题拆小一点再问一次。）")
