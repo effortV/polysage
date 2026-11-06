@@ -455,7 +455,13 @@ def apply_web_market(families: list[str] | None = None, days: int = WEB_MAX_AGE_
     out = []
     for fam in families or ["LLDPE", "LDPE", "HDPE"]:
         code = _code_for(fam)
-        rows = [r for r in web_rows(fam, days=days, top=500) if 5000 <= float(r["landed_price"] or 0) <= 30000]
+        rows, seen = [], set()
+        for r in web_rows(fam, days=days, top=500):
+            key = (r.get("producer") or "", (r.get("grade") or "").strip(), round(float(r["price"] or 0)), str(r["quote_date"])[:10])
+            if key in seen or not 5000 <= float(r["landed_price"] or 0) <= 30000:
+                continue                      # 同一条报价被几个网站转载，只算一次
+            seen.add(key)
+            rows.append(r)
         if not code or not rows:
             continue
         east = [r for r in rows if region_rank(r.get("warehouse") or "") <= 1 or "华东" in (r.get("warehouse") or "")] or rows
