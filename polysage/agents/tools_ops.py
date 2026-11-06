@@ -12,7 +12,7 @@ from .. import jobs
 from .tools import tool
 
 JOB_LABELS = {"research_materials": "找新材料", "research_literature": "文献与专利调研", "discovery": "研发流水线（全流程）",
-              "market_refresh": "更新行情"}
+              "market_refresh": "更新行情", "aba_round": "跑一整轮（行情→新料→试验方案→Word）"}
 jobs.JOB_NAMES.update(JOB_LABELS)
 _LAST: dict[str, dict[str, Any]] = {}       # 每类任务最近一次的结果摘要（给 background_status 用）
 

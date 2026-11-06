@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from polysage import jobs, ui
+from polysage import jobs, ui, wordout
 from polysage.config import settings
 from polysage.pipeline import state, task
 
@@ -85,7 +85,12 @@ for key, _ in state.STAGES:
             outs.append(Path(p))
 if not outs:
     st.caption("还没有产出文件。")
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 for p in outs:
     c_name, c_btn = st.columns([4, 1])
     c_name.write(f"{p.parent.name} / **{p.name}**")
-    c_btn.download_button("下载", data=p.read_bytes(), file_name=p.name, key=f"dl_{p}")
+    if p.suffix.lower() == ".md":                         # 报告类一律给 Word
+        c_btn.download_button("下载 Word", data=wordout.md_to_docx(p.read_text(encoding="utf-8"), p.stem),
+                              file_name=p.stem + ".docx", mime=DOCX_MIME, key=f"dl_{p}")
+    else:
+        c_btn.download_button("下载", data=p.read_bytes(), file_name=p.name, key=f"dl_{p}")

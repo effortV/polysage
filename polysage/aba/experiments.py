@@ -91,8 +91,269 @@ def first_round(t_ref: float = DEFAULT_T_REF, n_points: int = 11, seed: int = 0,
     picked = [(designs[i], "D-最优") for i in idx]
     picked += [(d, "指定") for d in (extra or [])]
     rn, saved = _save_round(refs + picked, t_ref)
-    path = export_round(rn, t_ref)
-    return {"round": rn, "trials": saved, "path": str(path)}
+    xlsx = export_round(rn, t_ref)
+    docx = export_round_docx(rn, t_ref)
+    return {"round": rn, "trials": saved, "path": str(docx), "xlsx": str(xlsx), "docx": str(docx)}
+
+
+# ---------------- 一整轮：对照 + 当前价最省 + 新料 + D-最优铺开 ----------------
+
+# 因素水平：A 层再生（表层，不超过现配方 33.3%）、B 层再生、B 层填充、B 层 HDPE、A 层占比、厚度
+SPACE = {"r_a": (0.0, 20.0, 33.3), "r_b": (20.0, 33.3, 45.0, 55.0), "f": (0.0, 10.0, 20.0, 30.0, 40.0, 50.0),
+         "h": (0.0, 5.0, 10.0), "a": (0.35, 0.40, 0.45, 0.50), "t": (3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0)}
+MIN_REL = 0.7          # 建模组也不做太离谱的：预测拉断力至少是现配方的 70%（太薄太稀的膜吹不起来）
+
+
+def compose(r_a: float, r_b: float, f: float, h: float, a: float, t: float,
+            resin: str = "LL", recycled: str = "R1", filler: str = "FL", hdpe: str = "HD") -> Design:
+    a_comp = {resin: round(100 - r_a, 2), recycled: round(r_a, 2)}
+    keep = (100 - f - h) / 100
+    b_comp = {resin: round((100 - r_b) * keep, 2), recycled: round(r_b * keep, 2)}
+    if f:
+        b_comp[filler] = f
+    if h:
+        b_comp[hdpe] = h
+    b_comp = {k: v for k, v in b_comp.items() if v > 1e-9}
+    return Design(a={k: v for k, v in a_comp.items() if v > 1e-9}, b=b_comp, a_ratio=a, thickness=t)
+
+
+def _factor_vec(r_a, r_b, f, h, a, t) -> np.ndarray:
+    """缩放到 [-1, 1]，再展开成 1 + 一次 + 平方（≥3 个水平的因素）+ 两两交互：首轮多做几组，留出看弯曲和交互的余地。"""
+    lo_hi = {k: (min(v), max(v)) for k, v in SPACE.items()}
+    x = []
+    for k, v in zip(SPACE, (r_a, r_b, f, h, a, t)):
+        lo, hi = lo_hi[k]
+        x.append(0.0 if hi == lo else 2 * (v - lo) / (hi - lo) - 1)
+    x = np.array(x)
+    sq = [x[i] ** 2 for i, k in enumerate(SPACE) if len(SPACE[k]) >= 3]
+    inter = [x[i] * x[j] for i in range(len(x)) for j in range(i + 1, len(x))]
+    return np.concatenate([[1.0], x, sq, inter])
+
+
+def _design_factors(d: Design) -> tuple[float, ...] | None:
+    """从配方反推六个因素（只认现有四种料组成的配方）；认不出就返回 None。"""
+    if set(d.a) - {"LL", "R1"} or set(d.b) - {"LL", "R1", "FL", "HD"}:
+        return None
+    f, h = d.b.get("FL", 0.0), d.b.get("HD", 0.0)
+    base = d.b.get("LL", 0.0) + d.b.get("R1", 0.0)
+    r_b = 100 * d.b.get("R1", 0.0) / base if base else 0.0
+    return (d.a.get("R1", 0.0), r_b, f, h, d.a_ratio, d.thickness)
+
+
+def _augment(F_fixed: np.ndarray, F_pool: np.ndarray, n: int, iters: int = 20) -> list[int]:
+    """在已定的组（对照、最省方案）基础上，再从候选池挑 n 组使信息矩阵行列式最大（Fedorov 交换，行列式引理加速）。"""
+    p = F_pool.shape[1]
+    M = (F_fixed.T @ F_fixed if len(F_fixed) else np.zeros((p, p))) + 1e-6 * np.eye(p)
+    sel: list[int] = []
+    for _ in range(min(n, len(F_pool))):
+        Minv = np.linalg.inv(M)
+        var = np.einsum("ij,jk,ik->i", F_pool, Minv, F_pool)
+        var[sel] = -np.inf
+        j = int(np.argmax(var))
+        sel.append(j)
+        M = M + np.outer(F_pool[j], F_pool[j])
+    for _ in range(iters):
+        improved = False
+        for k in range(len(sel)):
+            xo = F_pool[sel[k]]
+            Mm = M - np.outer(xo, xo)
+            Minv = np.linalg.inv(Mm)
+            var = np.einsum("ij,jk,ik->i", F_pool, Minv, F_pool)
+            old = float(xo @ Minv @ xo)
+            var[sel] = -np.inf
+            j = int(np.argmax(var))
+            if var[j] > old * 1.0001 + 1e-9:
+                sel[k] = j
+                M = Mm + np.outer(F_pool[j], F_pool[j])
+                improved = True
+        if not improved:
+            break
+    return sel
+
+
+def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str = "current", n_exploit: int = 12,
+               n_new: int = 5, md_req: float | None = 1.0, td_req: float | None = 1.0, batch_kg: float = 100.0) -> dict[str, Any]:
+    """一整轮试验（默认 50 组）：
+    1. 现配方对照：3.5 / 4.5 / 5.5 丝各一组——拉断力的绝对值、厚度效应；
+    2. 降本候选：按选定的价格，三个透光档各自预测最省、拉断力不低于现配方的方案（只用现有四种料）；
+    3. 新料候选：库里买得到的新料里，预测比只用现有料更省的（要先确认料源与外观）；
+    4. 建模组：其余名额用 D-最优在六个因素上铺开（含平方与交互），让回填后的机器学习能把系数、弯曲、交互学出来。
+    """
+    from . import optimize as O
+    from .prices import build as build_prices
+
+    ctx = Ctx(prices=build_prices(scenario)["prices"])
+    ref = base_design(t_ref)
+    items: list[tuple[Design, str]] = []
+    keys: set = {r["design"].key() for r in trials()}
+
+    def add(d: Design, why: str) -> bool:
+        k = d.key()
+        if k in keys or len(items) >= n_total:
+            return False
+        keys.add(k)
+        items.append((d, why))
+        return True
+
+    for t in (3.5, 4.5, 5.5):
+        add(base_design(t), "现配方对照")
+    ref_cost = ctx.cost(ref)
+    q = {"md_req": md_req, "td_req": td_req, "scenario": scenario, "t_ref": t_ref, "top_k": 8}
+    cur = O.run({**q, "use_new": False})
+    per = cur["groups"].get("现有料", {})
+    want = max(1, math.ceil(n_exploit / max(1, len(per))))
+    for g in sorted(per, reverse=True):
+        got = 0
+        for ev in per[g]:
+            n_done = len([1 for _, w in items if w.startswith(("降本", "提透光"))])
+            cheaper = bool(ref_cost and ev["cost"] < ref_cost - 1)
+            if got >= (want if cheaper else min(2, want)) or n_done >= n_exploit:
+                break
+            pct = abs(ref_cost - ev["cost"]) / ref_cost * 100 if ref_cost else 0.0
+            why = (f"降本：透光≥{R.GRADE_LABEL[g]} 预测最省（{ev['cost']:.0f} 元/吨，省 {pct:.1f}%）" if cheaper else
+                   f"提透光：透光{R.GRADE_LABEL[g]}里最省（{ev['cost']:.0f} 元/吨，比现配方贵 {pct:.1f}%）")
+            if add(ev["design"], why):
+                got += 1
+    if n_new:
+        new = O.run({**q, "use_new": True})
+        cand = sorted({ev["design"].key(): ev for items_ in (new["groups"].get("加新料") or {}).values() for ev in items_}.values(),
+                      key=lambda e: e["cost"] or 1e9)
+        k_new = 0
+        for ev in cand:
+            if k_new >= n_new:
+                break
+            mats = sorted(set(ev["design"].whole()) - O.CURRENT_CODES)
+            names = "、".join(f"{c} {ctx.mats.get(c, {}).get('name', '')}".strip() for c in mats)
+            if add(ev["design"], f"新料：{names}（{ev['cost']:.0f} 元/吨，先确认料源与外观）"):
+                k_new += 1
+    # 建模组：D-最优补满
+    pool, F = [], []
+    for r_a in SPACE["r_a"]:
+        for r_b in SPACE["r_b"]:
+            for f in SPACE["f"]:
+                for h in SPACE["h"]:
+                    for a in SPACE["a"]:
+                        for t in SPACE["t"]:
+                            d = compose(r_a, r_b, f, h, a, t)
+                            if d.key() in keys or ctx.check(d):
+                                continue
+                            p = ctx.predict(d, ref)
+                            if p["md_rel"] < MIN_REL or p["td_rel"] < MIN_REL:
+                                continue
+                            pool.append(d)
+                            F.append(_factor_vec(r_a, r_b, f, h, a, t))
+    fixed = [_factor_vec(*fx) for d, _ in items if (fx := _design_factors(d)) is not None]
+    n_fill = n_total - len(items)
+    if n_fill > 0 and pool:
+        sel = _augment(np.array(fixed) if fixed else np.zeros((0, len(F[0]))), np.array(F), n_fill)
+        picked = sorted((pool[j] for j in sel), key=lambda d: (d.a.get("R1", 0), d.b.get("HD", 0), d.b.get("FL", 0),
+                                                                d.b.get("R1", 0), d.a_ratio, d.thickness))
+        for d in picked:
+            add(d, "建模：铺开六个因素")
+    rn, saved = _save_round(items, t_ref)
+    meta = {"scenario": cur["scenario"], "query": cur["query"], "notes": cur["notes"], "n_pool": len(pool),
+            "counts": {}}
+    for _, why in items:
+        kind = why.split("：")[0]
+        meta["counts"][kind] = meta["counts"].get(kind, 0) + 1
+    kb.write_yaml(KB["experiment"] / f"round_{rn}_meta.yaml", meta)
+    xlsx = export_round(rn, t_ref, batch_kg)
+    docx = export_round_docx(rn, t_ref, batch_kg)
+    return {"round": rn, "trials": saved, "path": str(docx), "xlsx": str(xlsx), "docx": str(docx), "meta": meta}
+
+
+def round_meta(round_no: int) -> dict[str, Any]:
+    p = KB["experiment"] / f"round_{round_no}_meta.yaml"
+    return kb.read_yaml(p) if p.exists() else {}
+
+
+# ---------------- Word：试验方案 + 投料单 + 数据记录表（填好可以直接上传回来）----------------
+
+RECORD_HEADER = ["编号", "设定厚度(丝)", "实测厚度(丝)", "纵向拉断力(N)", "横向拉断力(N)", "透光档(0一般/1好/2很好)", "备注"]
+
+
+def export_round_docx(round_no: int, t_ref: float = DEFAULT_T_REF, batch_kg: float = 100.0) -> Path:
+    from .. import wordout as W
+    from .prices import price_row
+
+    rows = trials(round_no)
+    meta = round_meta(round_no)
+    ctx = Ctx()
+    ref = base_design(t_ref)
+    ref_cost = ctx.cost(ref)
+    doc = W.new_doc(f"ABA 三层膜 · 第 {round_no} 轮试验方案（{len(rows)} 组）",
+                    f"对照厚度 {t_ref:g} 丝　·　价格：{(meta.get('scenario') or {}).get('label', '当前价格卡')}", landscape=True)
+    doc.add_heading("一、这一轮怎么安排", level=1)
+    counts = meta.get("counts") or {}
+    explain = {
+        "现配方对照": "现配方在 3.5 / 4.5 / 5.5 丝各一组：拿到拉断力的绝对值（N）和厚度效应，所有预测都以它为基准。",
+        "降本": "按当前价格，各透光档里预测比现配方便宜、且纵横拉断力不低于现配方的方案——最可能直接用上的。",
+        "提透光": "要“很好”透光就得少用或不用表层再生料，每吨会比现配方贵；这几组用来确认值不值。",
+        "新料": "库里网上找到、买得到的新料，预测比只用现有料更省；打样前先确认料源、外观（本色/透明）和稳定供货。",
+        "建模": "D-最优设计在 A/B 层再生比例、B 层填充、B 层 HDPE、A 层占比、厚度六个因素上铺开，"
+                "数据回来后机器学习（岭回归 + 有序回归）才能把每个因素的影响、弯曲和交互学准。",
+    }
+    for k, txt in explain.items():
+        n = counts.get(k) or sum(1 for r in rows if r["purpose"].startswith(k))
+        if n:
+            W.para(doc, f"**{k} {n} 组**：{txt}", style="List Bullet")
+    W.note(doc, "顺序建议：先做现配方对照和降本组（最有用），建模组已按配方排好，同一配方连着改厚度最省换料时间。"
+                "做不了的组（吹不起来、外观明显不行）在备注里写原因，同样有用。")
+
+    doc.add_heading("二、试验配方", level=1)
+    plan = []
+    for r in rows:
+        d, p = r["design"], r["predicted"]
+        cost = p.get("cost")
+        pct = (ref_cost - cost) / ref_cost * 100 if cost and ref_cost else None
+        plan.append({"编号": r["code"], "目的": r["purpose"], "A 层（占比）": f"{d.a_ratio:.0%}：{layer_text(d.a)}",
+                     "B 层（占比）": f"{1 - d.a_ratio:.0%}：{layer_text(d.b)}", "厚度(丝)": d.thickness,
+                     "预计元/吨": cost, "较现配方": "" if pct is None else (f"省 {pct:.1f}%" if pct >= 0 else f"贵 {-pct:.1f}%"),
+                     "预测纵/横(×现配方)": f"{p.get('md_rel', 0):.2f} / {p.get('td_rel', 0):.2f}", "预测透光": p.get("grade_label")})
+    W.add_table(doc, plan, widths_cm=[1.4, 5.2, 4.6, 5.4, 1.3, 1.6, 1.5, 2.4, 1.3], font_size=8)
+    W.note(doc, f"现配方（{t_ref:g} 丝）：{ref.text()}，{ref_cost:.0f} 元/吨。“较现配方”按每吨价格比；预测拉断力是相对现配方 "
+                f"{t_ref:g} 丝的倍数，回填校准后会换成 N。" if ref_cost else "现配方缺价。")
+
+    doc.add_heading(f"三、投料单（每组按 {batch_kg:g} kg 成品折算）", level=1)
+    kg_rows = []
+    for r in rows:
+        kg = _kg(r["design"], batch_kg)
+        kg_rows.append({"编号": r["code"], **{k.replace(" kg", ""): v for k, v in kg.items()}})
+    cols = ["编号"] + sorted({k for row in kg_rows for k in row if k != "编号"}, key=lambda c: (c[:2], c))
+    W.add_table(doc, (cols, [[row.get(c, "") for c in cols] for row in kg_rows]), font_size=8)
+    W.note(doc, "A 层两面同配方，kg 是两面合计。代码含义见“六、用到的料和价格”。")
+
+    doc.add_heading("四、测试与判档约定", level=1)
+    W.bullets(doc, TEST_NOTE)
+
+    doc.add_heading("五、数据记录表（填好后在「实验与校准 › 回填实测」上传这个 Word 即可）", level=1)
+    W.add_table(doc, (RECORD_HEADER, [[r["code"], r["design"].thickness, "", "", "", "", ""] for r in rows]),
+                widths_cm=[1.6, 2.0, 2.2, 3.0, 3.0, 3.4, 9.0], font_size=9, row_height_cm=0.7)
+
+    doc.add_heading("六、用到的料和价格", level=1)
+    used = sorted({k for r in rows for k in r["design"].whole()})
+    price_rows = []
+    for c in used:
+        pr = price_row(c) or {}
+        price_rows.append({"代码": c, "名称": ctx.mats.get(c, {}).get("name", ""), "单价(元/吨)": ctx.prices.get(c),
+                           "报价日期": pr.get("price_date") or "", "来源": (pr.get("source") or "")[:60]})
+    W.add_table(doc, price_rows, widths_cm=[1.4, 6, 2.2, 2.4, 12], font_size=8.5)
+    for n in (meta.get("notes") or [])[:4]:
+        W.note(doc, "· " + n)
+    path = KB["experiment"] / f"ABA第{round_no}轮试验方案_{date.today().isoformat()}.docx"
+    return W.save(doc, path)
+
+
+def _docx_record_frame(source: Any) -> pd.DataFrame:
+    from .. import wordout as W
+
+    for t in W.read_tables(source):
+        if not t:
+            continue
+        head = t[0]
+        if any("编号" in h for h in head) and any("纵向" in h for h in head):
+            return pd.DataFrame([r[:len(head)] for r in t[1:]], columns=head)
+    raise ValueError("Word 里找不到数据记录表（表头要有“编号”和“纵向拉断力”）")
 
 
 # ---------------- 导出 / 回填 ----------------
@@ -135,8 +396,14 @@ def _num(v: Any) -> float | None:
 
 
 def import_results(source: Any) -> dict[str, Any]:
-    """读回填好的“数据记录”页（xlsx 路径 / 上传文件 / DataFrame），按编号写回。"""
-    df = source if isinstance(source, pd.DataFrame) else pd.read_excel(source, sheet_name="数据记录")
+    """读回填好的数据记录表（Word 方案 / xlsx 方案 / DataFrame），按编号写回。"""
+    name = str(getattr(source, "name", source if isinstance(source, (str, Path)) else "")).lower()
+    if isinstance(source, pd.DataFrame):
+        df = source
+    elif name.endswith(".docx"):
+        df = _docx_record_frame(source)                 # 填好的 Word 方案直接传回来
+    else:
+        df = pd.read_excel(source, sheet_name="数据记录")
     cols = {c: str(c) for c in df.columns}
     find = lambda key: next((c for c, s in cols.items() if key in s), None)  # noqa: E731
     c_code, c_t, c_md, c_td, c_g, c_note = (find("编号"), find("实测厚度"), find("纵向"), find("横向"), find("透光"), find("备注"))
@@ -335,5 +602,6 @@ def next_round(query: dict[str, Any] | None = None, n_exploit: int = 6, n_explor
     items = list(chosen)
     items += [(base_design(q.get("t_ref", DEFAULT_T_REF)), "现配方对照")]
     rn, saved = _save_round(items, q.get("t_ref", DEFAULT_T_REF))
-    path = export_round(rn, q.get("t_ref", DEFAULT_T_REF))
-    return {"round": rn, "trials": saved, "path": str(path)}
+    xlsx = export_round(rn, q.get("t_ref", DEFAULT_T_REF))
+    docx = export_round_docx(rn, q.get("t_ref", DEFAULT_T_REF))
+    return {"round": rn, "trials": saved, "path": str(docx), "xlsx": str(xlsx), "docx": str(docx)}

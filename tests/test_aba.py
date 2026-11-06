@@ -1,6 +1,8 @@
 """ABA 三层膜：成本、定性预测、分档寻优、价格场景、实验闭环、对话工具。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -136,8 +138,9 @@ def _simulate(trials):
 def test_experiment_loop(aba_prices):
     r1 = E.first_round(t_ref=4.5)
     assert len(r1["trials"]) == 14 and sum(t["purpose"] == "现配方对照" for t in r1["trials"]) == 3
-    x = pd.read_excel(r1["path"], sheet_name=None)
+    x = pd.read_excel(r1["xlsx"], sheet_name=None)
     assert {"试验配方", "数据记录", "说明"} <= set(x)
+    assert r1["docx"].endswith(".docx") and Path(r1["docx"]).exists()
     assert E.calibrate()["ok"] is False                                          # 没回填不能校准
     res = E.import_results(_simulate(r1["trials"]))
     assert res["updated"] == 14 and not res["problems"]
@@ -190,3 +193,92 @@ def test_task_upgrades_old_brief(home):
     t = task.load()
     assert t["product"]["structure"] == "ABA" and t["search"]["max_hits_per_query"] == 9
     assert "纵向拉断力" in task.brief() and "撕裂" not in task.brief()
+
+
+def test_plan_round_50_and_word_roundtrip(aba_prices):
+    from docx import Document
+
+    from polysage import wordout as W
+
+    r = E.plan_round(50, t_ref=4.5)
+    tr = r["trials"]
+    assert len(tr) == 50 and len({t["design"].key() for t in tr}) == 50
+    kinds = r["meta"]["counts"]
+    assert kinds["现配方对照"] == 3 and kinds.get("降本", 0) >= 3 and kinds.get("建模", 0) >= 25
+    ctx = Ctx()
+    for t in tr:
+        assert not ctx.check(t["design"]), t["design"].text()                      # 每组都满足层规则
+        if t["purpose"].startswith(("降本", "提透光")):
+            assert t["predicted"]["md_rel"] >= 0.99 and t["predicted"]["td_rel"] >= 0.99
+        if t["purpose"].startswith("建模"):
+            assert min(t["predicted"]["md_rel"], t["predicted"]["td_rel"]) >= E.MIN_REL - 1e-9
+    ths = {t["design"].thickness for t in tr if t["purpose"].startswith("建模")}
+    fls = {t["design"].b.get("FL", 0) for t in tr if t["purpose"].startswith("建模")}
+    assert len(ths) >= 4 and len(fls) >= 4                                         # 因素真的铺开了
+    # Word：方案 + 投料单 + 记录表；把记录表填上再传回来
+    doc = Document(r["docx"])
+    rec = next(t for t in doc.tables if t.rows[0].cells[0].text == "编号" and "纵向" in t.rows[0].cells[3].text)
+    sim = _simulate(tr).set_index("编号")
+    for row in rec.rows[1:]:
+        code = row.cells[0].text
+        row.cells[2].text = str(sim.loc[code, "实测厚度(丝)"])
+        row.cells[3].text = str(sim.loc[code, "纵向拉断力(N)"])
+        row.cells[4].text = str(sim.loc[code, "横向拉断力(N)"])
+        row.cells[5].text = str(sim.loc[code, "透光档(0一般/1好/2很好)"])
+    filled = Path(r["docx"]).with_name("filled.docx")
+    doc.save(filled)
+    res = E.import_results(str(filled))
+    assert res["updated"] == 50 and not res["problems"]
+    cal = E.calibrate()
+    assert cal["ok"] and cal["grade_hit"] >= 80
+    assert any("纵向" in h for t in W.read_tables(str(filled)) for h in t[0])
+
+
+def test_markdown_to_word():
+    from docx import Document
+    import io
+
+    from polysage import wordout as W
+
+    md = """# 结论
+现配方 **9200 元/吨**。
+
+- 第一条
+  - 子条
+1. 编号一
+
+| 档 | 元/吨 |
+|---|---|
+| 很好 | 9100 |
+| 好 | 8800 |
+
+```
+code
+```"""
+    doc = Document(io.BytesIO(W.md_to_docx(md, "测试报告")))
+    texts = [p.text for p in doc.paragraphs]
+    assert "测试报告" in texts and "结论" in texts and any("9200 元/吨" in x for x in texts)
+    assert doc.tables and doc.tables[0].rows[1].cells[1].text == "9100"
+
+
+def test_campaign_clean_and_report(aba_prices, monkeypatch):
+    from docx import Document
+
+    from polysage.aba import campaign as C
+
+    code = "MX9"
+    MAT.upsert_material({"code": code, "name": "测试 LDPE 抽错价", "category": "主体树脂", "origin": "智能体发现"})
+    MAT.add_price(code, 121000, "estimate", source="网查参考价（测试）", price_date="2026-09-24")
+    MAT.add_price("FL", 2500, "actual", source="测试实价", price_date="2026-11-05")
+    removed = C.clean_prices()
+    assert any(code in x and "121000" in x for x in removed)
+    assert not db.q("SELECT 1 FROM prices WHERE material_code=?", (code,))
+    assert db.q("SELECT 1 FROM prices WHERE material_code='FL' AND price_type='actual'")      # 实价不动
+    monkeypatch.setattr(C, "_scenarios", lambda: [P.build("current")])                      # 不联网取期货
+    r = E.plan_round(24, t_ref=4.5)
+    path = C.report_docx(r["round"], cleaned=removed)
+    doc = Document(str(path))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "一、结论" in text and "每档最省" in text and "按吨和按面积" in text and "第 1 轮" in text
+    assert len(doc.tables) >= 4
+    assert C.latest_files()["运行报告"].endswith(".docx")

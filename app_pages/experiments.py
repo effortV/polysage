@@ -5,12 +5,13 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from polysage import ui
+from polysage import jobs, ui
+from polysage.aba import prices as P
 from polysage.aba import experiments as E
 from polysage.aba import rules as R
 from polysage.aba.model import layer_text
 
-ui.page_header("实验与校准", "出试验方案 → 按投料单打样 → 回填实测 → 校准系数 → 推荐下一轮。实验越多，方案预测越准。")
+ui.page_header("实验与校准", "跑一整轮出试验方案（Word）→ 按投料单打样 → 把 Word 里的记录表填好传回来 → 校准系数 → 推荐下一轮。实验越多，预测越准。")
 
 _trials = E.trials()
 _measured = E.measured()
@@ -26,10 +27,15 @@ tab_plan, tab_fill, tab_cal, tab_next = st.tabs(["试验方案", "回填实测",
                                                 key="experiments-workspace-tab", on_change="rerun")
 
 
-def _download(path: str, label: str, key: str) -> None:
-    p = Path(path)
-    if p.exists():
-        st.download_button(label, p.read_bytes(), file_name=p.name, key=key)
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+jobs.JOB_NAMES.setdefault("aba_round", "跑一整轮（行情 → 新料 → 试验方案 → Word）")
+
+
+def _download(path: str, label: str, key: str, primary: bool = False) -> None:
+    p = Path(path or "")
+    if p.is_file():
+        st.download_button(label, p.read_bytes(), file_name=p.name, key=key, type="primary" if primary else "secondary",
+                           mime=DOCX_MIME if p.suffix == ".docx" else None, icon=":material/download:")
 
 
 def _trials_table(rows: list[dict]) -> None:
@@ -45,33 +51,94 @@ def _trials_table(rows: list[dict]) -> None:
     } for t in rows]), hide_index=True, **ui.WIDE)
 
 
+@st.fragment(run_every="5s" if jobs.is_running("aba_round") else None)
+def _round_job_panel() -> None:
+    run = jobs.info()
+    res = jobs.result("aba_round")
+    if run and run["name"] == "aba_round":
+        st.info(f"正在跑一整轮：更新行情 → 找新料 → 分档寻优 → 出试验方案和报告（已 {run['elapsed'] / 60:.0f} 分钟，"
+                "一般 5~15 分钟）。可以先去别的页面，跑完回来下载。", icon=":material/autorenew:")
+        return
+    if res and res["done"]:
+        if res["error"]:
+            st.error(f"上次一整轮失败：{res['error']}")
+        elif res["result"]:
+            r = res["result"]
+            st.success(f"第 {r['round']} 轮已出：{r['n']} 组（" + "，".join(f"{k} {v}" for k, v in r["counts"].items())
+                       + f"），用时 {r['minutes']} 分钟。" + "".join(f" {k}：{v}。" for k, v in r["steps"].items()))
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                _download(r["plan_docx"], "下载试验方案 Word", "round_plan_dl", primary=True)
+            with c2:
+                _download(r["report_docx"], "下载运行报告 Word", "round_rep_dl", primary=True)
+            with c3:
+                _download(r["plan_xlsx"], "另存方案表 xlsx", "round_xlsx_dl")
+
+
 def _render_tab_plan() -> None:
-    st.caption("首轮：现配方在 3.5 / 4.5 / 5.5 丝各做一组（拿到拉断力的绝对值和厚度效应），再用 D-最优挑 11 组，"
-               "覆盖再生比例、B 层填充（0~45%）、B 层 HDPE、A 层占比、厚度五个因素。只用你们现有的料，先把主要系数校准准。")
-    c1, c2, c3 = st.columns(3)
-    t_ref = c1.number_input("现配方对照厚度（丝）", 2.0, 8.0, 4.5, step=0.5, key="plan_tref")
-    n_pts = c2.number_input("D-最优组数", 6, 20, 11, key="plan_n")
-    if c3.button("生成首轮试验方案", type="primary", disabled=bool(_trials), help="已有试验时请用「下一轮」"):
-        r = E.first_round(t_ref=t_ref, n_points=int(n_pts))
-        st.session_state["exp_path"] = r["path"]
-        st.success(f"第 {r['round']} 轮 {len(r['trials'])} 组已生成。")
+    st.markdown("**一键跑一整轮**：更新行情（期货 + 网查报价）→ 清掉抽错的价格 → 找新料 → 分档寻优（当前价 + 期货价）"
+                "→ 出试验方案 → 生成《试验方案》《运行报告》两份 Word。")
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.4], vertical_alignment="bottom")
+    n_all = c1.number_input("这一轮做几组", 12, 80, 50, step=2, key="round_n")
+    refresh = c2.checkbox("先更新行情", value=True, key="round_refresh")
+    find_new = c3.checkbox("先找新料", value=True, key="round_new")
+    if c4.button("开始跑一整轮", type="primary", icon=":material/play_arrow:", disabled=jobs.is_running()):
+        from polysage.aba import campaign
+
+        n = int(n_all)
+        ok = jobs.start("aba_round", lambda: campaign.run(n, refresh_market=refresh, find_new=find_new))
+        st.toast("已在后台开始" if ok else "后台有别的任务在跑，等它跑完再开始", icon=":material/autorenew:")
         st.rerun()
+    _round_job_panel()
+    with ui.expander("只出试验方案（不更新行情、不找新料，几秒钟）"):
+        st.caption("组成：现配方 3.5 / 4.5 / 5.5 丝对照 3 组 + 各透光档预测最省（降本 / 提透光）+ 库里更省的新料 + "
+                   "其余用 D-最优在 A/B 层再生、B 层填充、B 层 HDPE、A 层占比、厚度六个因素上铺开（给机器学习用）。")
+        a1, a2, a3 = st.columns(3)
+        t_ref = a1.number_input("现配方对照厚度（丝）", 2.0, 8.0, 4.5, step=0.5, key="plan_tref")
+        n_pts = a2.number_input("组数", 12, 80, 50, step=2, key="plan_n")
+        scen = a3.selectbox("按哪个价格挑最省", list(P.SCENARIOS)[:4], format_func=P.SCENARIOS.get, key="plan_scen")
+        if st.button("生成试验方案", key="plan_go"):
+            with st.spinner("挑选中…"):
+                r = E.plan_round(int(n_pts), t_ref=t_ref, scenario=scen)
+            st.session_state["exp_path"] = r["docx"]
+            st.session_state["exp_xlsx"] = r["xlsx"]
+            st.session_state["plan_msg"] = (f"第 {r['round']} 轮 {len(r['trials'])} 组已生成："
+                                            + "，".join(f"{k} {v}" for k, v in r["meta"]["counts"].items()))
+            st.rerun()
+    if st.session_state.get("plan_msg"):
+        st.success(st.session_state.pop("plan_msg"))
+    if st.session_state.get("exp_path"):
+        d1, d2 = st.columns(2)
+        with d1:
+            _download(st.session_state["exp_path"], "下载方案 Word", "plan_dl", primary=True)
+        with d2:
+            _download(st.session_state.get("exp_xlsx"), "另存方案表 xlsx", "plan_dl_x")
     if _trials:
+        st.divider()
         rounds = sorted({t["round"] for t in _trials})
         pick = st.selectbox("看哪一轮", rounds, index=len(rounds) - 1, format_func=lambda x: f"第 {x} 轮")
         _trials_table([t for t in _trials if t["round"] == pick])
-        if st.button("导出这一轮方案表（含投料单与回填页）", key="plan_export"):
-            st.session_state["exp_path"] = str(E.export_round(pick))
-    if st.session_state.get("exp_path"):
-        _download(st.session_state["exp_path"], "下载方案表 xlsx", "plan_dl")
+        b1, b2 = st.columns(2)
+        if b1.button("重新导出这一轮的方案 Word", key="plan_export"):
+            st.session_state["exp_path"] = str(E.export_round_docx(pick))
+            st.session_state["exp_xlsx"] = str(E.export_round(pick))
+            st.rerun()
+        if b2.button("生成这一轮的运行报告 Word", key="plan_report"):
+            from polysage.aba import campaign
+
+            with st.spinner("按当前价和期货价重新算各档最省方案…"):
+                st.session_state["exp_report"] = str(campaign.report_docx(pick))
+        if st.session_state.get("exp_report"):
+            _download(st.session_state["exp_report"], "下载运行报告 Word", "plan_rep_dl", primary=True)
     with ui.expander("测试与判档约定"):
         for line in E.TEST_NOTE:
             st.caption("· " + line)
 
 
 def _render_tab_fill() -> None:
-    st.caption("把方案表的“数据记录”页填好上传：编号、实测厚度、纵向/横向拉断力（N）、透光档（0/1/2）。空着的组会跳过。")
-    up = st.file_uploader("上传回填好的方案表", type=["xlsx"], key="fill_up")
+    st.caption("把方案 Word 最后的“数据记录表”填好直接上传（Excel 方案表的“数据记录”页也行）："
+               "实测厚度、纵向/横向拉断力（N）、透光档（0/1/2）。没做的组空着会跳过。")
+    up = st.file_uploader("上传回填好的方案（Word 或 Excel）", type=["docx", "xlsx"], key="fill_up")
     if up is not None and st.button("导入", type="primary", key="fill_go"):
         try:
             res = E.import_results(up)
@@ -130,11 +197,13 @@ def _render_tab_next() -> None:
     use_new = c4.checkbox("允许新料", value=False, key="next_new")
     if st.button("生成下一轮", type="primary", key="next_go"):
         r = E.next_round({"md_req": opts[md], "td_req": opts[td], "use_new": use_new}, n_exploit=int(n_exp))
-        st.session_state["exp_path"] = r["path"]
+        st.session_state["exp_path"] = r["docx"]
+        st.session_state["exp_xlsx"] = r["xlsx"]
         st.success(f"第 {r['round']} 轮 {len(r['trials'])} 组已生成。")
         st.rerun()
     if st.session_state.get("exp_path"):
-        _download(st.session_state["exp_path"], "下载最新方案表 xlsx", "next_dl")
+        _download(st.session_state["exp_path"], "下载最新方案 Word", "next_dl", primary=True)
+        _download(st.session_state.get("exp_xlsx"), "另存方案表 xlsx", "next_dl_x")
 
 
 _TAB_RENDERERS = (

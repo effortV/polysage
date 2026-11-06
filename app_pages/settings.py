@@ -8,7 +8,7 @@ from polysage.envfile import set_env
 from polysage.ingest import embed_missing, rebuild_vectors
 from polysage.pipeline import task
 from polysage.rag import index as rag_index
-from polysage.sources import elsevier, openalex, wiley
+from polysage.sources import elsevier, openalex, semantic_scholar, wiley
 
 jobs.JOB_NAMES.setdefault("embed_rebuild", "重建向量索引")
 jobs.JOB_NAMES.setdefault("embed_fill", "补建向量")
@@ -327,6 +327,8 @@ def _render_data() -> None:
         if st.button("测试 Wiley", icon=":material/bolt:", disabled=not settings.wiley_tdm_token):
             with st.spinner("找一篇 Wiley 开放获取文章试下载…"):
                 st.session_state["lit_test"] = ("Wiley", *wiley.ping())
+        if st.button("测试 Semantic Scholar", icon=":material/bolt:"):
+            st.session_state["lit_test"] = ("Semantic Scholar", *semantic_scholar.ping())
     res = st.session_state.get("lit_test")
     if res:
         (st.success if res[1] else st.error)(f"{res[0]}：{res[2]}")

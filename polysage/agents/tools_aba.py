@@ -106,22 +106,39 @@ def aba_prices():
     return "\n".join([head] + rows + tail + [f"· {n}" for n in notes]), []
 
 
-@tool("aba_experiment", "实验闭环：first 生成首轮试验方案（现配方 3 个厚度对照 + D-最优 11 组）；next 用（已校准的）模型推荐下一轮；"
-      "calibrate 用已回填的实测校准系数；status 看试验和校准状态。回填实测请到「实验与模型」页上传表格。",
-      {"action": {"type": "string", "enum": ["first", "next", "calibrate", "status"]},
+@tool("aba_experiment", "实验闭环：round 在后台跑一整轮（更新行情→找新料→分档寻优→出 n 组试验方案，另出《试验方案》《运行报告》两份 Word，"
+      "约 5~15 分钟，进度用 background_status 查）；first 立刻出 n 组试验方案（默认 50：现配方对照 + 各档预测最省 + 新料 + "
+      "D-最优建模组，含 Word）；next 用（已校准的）模型推荐下一轮；calibrate 用已回填的实测校准系数；status 看试验和校准状态。"
+      "回填实测：把方案 Word 里的数据记录表填好，在「实验与校准」页上传。回答里写上生成的文件名，用户就能直接下载。",
+      {"action": {"type": "string", "enum": ["round", "first", "next", "calibrate", "status"]},
+       "n": {"type": "integer", "description": "这一轮几组（12~80，默认 50）"},
        "md_req": {"type": "number"}, "td_req": {"type": "number"}, "t_ref": {"type": "number"}}, ["action"])
-def aba_experiment(action: str, md_req: float = 1.0, td_req: float = 1.0, t_ref: float = 4.5):
+def aba_experiment(action: str, n: int = 50, md_req: float = 1.0, td_req: float = 1.0, t_ref: float = 4.5):
     from ..aba import experiments as E
     from ..aba import rules as R
 
+    n = max(12, min(int(n or 50), 80))
+    if action == "round":
+        from .. import jobs
+        from ..aba import campaign
+        from .tools_ops import JOB_LABELS
+
+        running = jobs.info()
+        if running:
+            return f"后台正在跑「{JOB_LABELS.get(running['name'], running['name'])}」，等它跑完再开始。", []
+        ok = jobs.start("aba_round", lambda: campaign.run(n, t_ref=float(t_ref)))
+        return ("已在后台开始跑一整轮：更新行情 → 找新料 → 分档寻优 → 出 %d 组试验方案和两份 Word，约 5~15 分钟；"
+                "跑完在「实验与校准」页下载，或再问我进度。" % n if ok else "没能启动后台任务，请稍后再试。"), []
     if action == "first":
-        r = E.first_round(t_ref=float(t_ref))
-        lines = [f"第 {r['round']} 轮试验方案 {len(r['trials'])} 组，表格：{Path(r['path']).name}（知识库 06_实验数据）"]
-        lines += [f"{t['code']}｜{t['purpose']}｜{t['design'].text()}" for t in r["trials"]]
-        return "\n".join(lines), []
+        r = E.plan_round(n, t_ref=float(t_ref))
+        lines = [f"第 {r['round']} 轮试验方案 {len(r['trials'])} 组（" + "，".join(f"{k} {v}" for k, v in r["meta"]["counts"].items())
+                 + f"）。Word：06_实验数据/{Path(r['docx']).name}；表格：06_实验数据/{Path(r['xlsx']).name}"]
+        lines += [f"{t['code']}｜{t['purpose']}｜{t['design'].text()}｜预计 {t['predicted'].get('cost')} 元/吨，"
+                  f"透光 {t['predicted'].get('grade_label')}" for t in r["trials"]]
+        return chr(10).join(lines), []
     if action == "next":
         r = E.next_round({"md_req": _req(md_req), "td_req": _req(td_req), "t_ref": float(t_ref)})
-        lines = [f"第 {r['round']} 轮推荐 {len(r['trials'])} 组：{Path(r['path']).name}"]
+        lines = [f"第 {r['round']} 轮推荐 {len(r['trials'])} 组。Word：06_实验数据/{Path(r['docx']).name}"]
         lines += [f"{t['code']}｜{t['purpose']}｜{t['design'].text()}｜预计 {t['predicted'].get('cost')} 元/吨，透光 {t['predicted'].get('grade_label')}"
                   for t in r["trials"]]
         return "\n".join(lines), []

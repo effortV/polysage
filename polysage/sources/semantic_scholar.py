@@ -40,3 +40,30 @@ def search(query: str, limit: int = 20, year_from: int | None = None) -> list[Se
         headers["x-api-key"] = settings.semantic_scholar_api_key
     data = get_json(API, params=params, headers=headers) or {}
     return [_hit(p) for p in data.get("data") or []]
+
+
+def ping(key: str | None = None) -> tuple[bool, str]:
+    """设置页“测试 Semantic Scholar”：带 key 搜一条；不带 key 也能用，但容易被限流。"""
+    import httpx
+
+    from .. import net
+
+    key = key if key is not None else settings.semantic_scholar_api_key
+    headers = {"User-Agent": settings.user_agent}
+    if key:
+        headers["x-api-key"] = key
+    try:
+        with net.client(API, timeout=30.0) as c:
+            r = c.get(API, params={"query": "LLDPE blown film tensile", "limit": 1, "fields": "title,year"}, headers=headers)
+    except httpx.HTTPError as e:
+        return False, f"连不上 api.semanticscholar.org：{e}"
+    if r.status_code == 200:
+        data = r.json()
+        first = ((data.get("data") or [{}])[0]).get("title", "")
+        return True, (f"可用{'（带 key）' if key else '（没填 key，公共额度，容易限流）'}：测试检索共 {data.get('total', 0)} 篇，"
+                      f"第一篇《{first[:60]}》")
+    if r.status_code in (401, 403):
+        return False, f"{r.status_code}：key 无效或没开通这个接口，检查是否复制完整。"
+    if r.status_code == 429:
+        return False, "429：请求太频繁（没 key 时常见），过一会再测。"
+    return False, f"异常 {r.status_code}：{r.text[:200]}"

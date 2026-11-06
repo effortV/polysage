@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -170,13 +172,17 @@ def _render_tab_opt() -> None:
         return
     _result_tables(out)
     b1, b2, b3 = st.columns(3)
-    if b1.button("导出表格", key="aba_export"):
-        path = RP.export_xlsx(out)
-        st.session_state["aba_export_path"] = str(path)
+    if b1.button("导出 Word 报告", key="aba_export", icon=":material/description:"):
+        st.session_state["aba_export_path"] = str(RP.export_docx(out))
+        st.session_state["aba_export_xlsx"] = str(RP.export_xlsx(out))
     if st.session_state.get("aba_export_path"):
-        p = st.session_state["aba_export_path"]
-        with open(p, "rb") as fh:
-            b1.download_button("下载 xlsx", fh.read(), file_name=p.replace("\\", "/").split("/")[-1], key="aba_dl")
+        p = Path(st.session_state["aba_export_path"])
+        if p.exists():
+            b1.download_button("下载 Word", p.read_bytes(), file_name=p.name, key="aba_dl", type="primary",
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        x = Path(st.session_state.get("aba_export_xlsx") or "")
+        if x.is_file():
+            b1.download_button("另存表格 xlsx", x.read_bytes(), file_name=x.name, key="aba_dl_x")
     if b2.button("每档第 1 名存入配方库", key="aba_save"):
         codes = RP.save_to_library(out, origin="配方推荐页")
         b2.success("已存：" + ("、".join(codes) or "无（含买不到的料）"))
