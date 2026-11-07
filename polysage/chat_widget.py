@@ -188,3 +188,72 @@ def get_or_create_session(role_key: str, state_key: str) -> int:
     sid = runner.create_session(role_key)
     st.session_state[state_key] = sid
     return sid
+
+
+# ---------------- 历史对话 ----------------
+
+_NOWRAP = {"wrap": False} if ui._has_param(st.container, "wrap") else {}   # 标题和删除钮放一行，不折行
+
+def _day_group(ts: str | None) -> str:
+    from datetime import date, datetime
+
+    try:
+        days = (date.today() - datetime.fromisoformat(ts or "").date()).days
+    except ValueError:
+        return "更早"
+    return "今天" if days <= 0 else "昨天" if days == 1 else "近 7 天" if days < 7 else "近 30 天" if days < 31 else "更早"
+
+
+@st.dialog("删除这个对话？")
+def _confirm_delete(sid: int, label: str, state_key: str) -> None:
+    st.markdown(f"**{label}**")
+    st.caption("这个对话的问答记录会一起删掉，不能恢复。")
+    c1, c2 = st.columns(2)
+    if c1.button("删除", type="primary", key="chat_del_ok", icon=":material/delete:", **ui._WIDE_BTN):
+        runner.delete_session(sid)
+        if st.session_state.get(state_key) == sid:
+            st.session_state.pop(state_key, None)          # 删的是正在看的：回到最近的一个
+        st.toast("已删除", icon=":material/check:")
+        st.rerun()
+    if c2.button("取消", key="chat_del_cancel", **ui._WIDE_BTN):
+        st.rerun()
+
+
+def render_history(role_key: str, state_key: str, current: int) -> None:
+    """历史对话：新对话 + 按时间分组的列表，点一下打开，垃圾桶删除（先确认）。"""
+    if st.button("新对话", key=f"{state_key}_new", icon=":material/add_comment:", type="primary", **ui._WIDE_BTN):
+        st.session_state[state_key] = runner.new_chat(role_key, current)
+        st.rerun()
+    chats = runner.list_chats(role_key)
+    if not chats:
+        st.caption("还没有历史对话。问过的问题会留在这里，随时点开接着问。")
+        return
+    if len(chats) > 8:
+        q = st.text_input("搜索历史对话", key=f"{state_key}_search", placeholder="搜索历史对话",
+                          label_visibility="collapsed")
+        if q.strip():
+            chats = [c for c in chats if q.strip().lower() in (c["label"] + " " + (c["first_q"] or "")).lower()]
+            if not chats:
+                st.caption("没找到。")
+    kw = {"height": 440} if len(chats) > 9 else {}
+    with st.container(key="chat_hist", border=False, **kw):
+        last = None
+        for c in chats:
+            g = _day_group(c["updated_at"])
+            if g != last:
+                st.caption(g)
+                last = g
+            is_cur = c["id"] == current
+            when = (c["updated_at"] or "")[5:16].replace("T", " ")
+            row = (st.container(horizontal=True, gap="small", vertical_alignment="center", **_NOWRAP)
+                   if ui.HAS_HORIZONTAL else None)
+            left, right = (row, row) if row is not None else st.columns([6, 1])
+            with left:
+                if st.button(c["label"], key=f"{state_key}_open_{c['id']}", type="secondary" if is_cur else "tertiary",
+                             icon=":material/chat:" if is_cur else None, help=f"{when} · 问了 {c['n_q']} 次",
+                             **ui._WIDE_BTN) and not is_cur:
+                    st.session_state[state_key] = c["id"]
+                    st.rerun()
+            with right:
+                if st.button(":material/delete:", key=f"{state_key}_del_{c['id']}", type="tertiary", help="删除这个对话"):
+                    _confirm_delete(c["id"], c["label"], state_key)

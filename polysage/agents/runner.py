@@ -93,7 +93,34 @@ def rename_session(session_id: int, title: str) -> None:
 
 
 def delete_session(session_id: int) -> None:
+    db.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
     db.delete("sessions", session_id)
+
+
+def list_chats(role_key: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    """历史对话列表（新的在前）：带第一个问题、问了几次，用来显示标题；空对话（一句没问）不列。"""
+    rows = db.q(
+        "SELECT s.id, s.title, s.created_at, s.updated_at, s.archived, "
+        "(SELECT content FROM messages m WHERE m.session_id=s.id AND m.role='user' ORDER BY m.id LIMIT 1) AS first_q, "
+        "(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.role='user') AS n_q "
+        "FROM sessions s WHERE s.role_key=? ORDER BY s.updated_at DESC, s.id DESC LIMIT ?", (role_key, limit))
+    out = []
+    for r in rows:
+        if not r["n_q"]:
+            continue
+        title = " ".join((r["first_q"] or "").split())       # 标题就用第一个问题（会话名都是角色名，分不出来）
+        r["label"] = title[:40] + ("…" if len(title) > 40 else "")
+        out.append(r)
+    return out
+
+
+def new_chat(role_key: str, current: int | None = None) -> int:
+    """“新对话”：当前这个还一句没问就接着用它，不再多建空对话。"""
+    if current and get_session(current) and not db.q1("SELECT 1 FROM messages WHERE session_id=?", (current,)):
+        return current
+    empty = db.q1("SELECT s.id FROM sessions s WHERE s.role_key=? AND s.archived=0 AND NOT EXISTS "
+                  "(SELECT 1 FROM messages m WHERE m.session_id=s.id) ORDER BY s.id DESC", (role_key,))
+    return empty["id"] if empty else create_session(role_key)
 
 
 def messages(session_id: int) -> list[dict[str, Any]]:

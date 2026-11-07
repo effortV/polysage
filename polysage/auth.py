@@ -1,15 +1,19 @@
 """访问密码与核心密钥：都只存加盐哈希（.env 里的 APP_PASSWORD_HASH / ADMIN_KEY_HASH），不存明文。
 
 改访问密码必须先输对核心密钥；核心密钥连续输错 5 次，锁 10 分钟。
+
+登录后可在这台设备上记住 30 天：浏览器里存一个签名令牌（到期时间 + 签名），签名里带着当前访问密码的哈希，
+所以一改密码，所有设备上记住的登录都自动失效，要用新密码重新登录。
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 import time
 
-from .config import settings
+from .config import DATA_DIR, settings
 
 ITERATIONS = 240_000
 MAX_FAILS = 5
@@ -46,6 +50,63 @@ def check_password(pw: str) -> bool:
     if settings.app_password:
         return hmac.compare_digest((pw or "").encode("utf-8"), settings.app_password.encode("utf-8"))
     return True
+
+
+# ---------------- 记住登录（30 天） ----------------
+
+REMEMBER_DAYS = 30
+COOKIE = "hn_login"
+_SECRET_FILE = DATA_DIR / ".login_secret"
+
+
+def _login_secret() -> bytes:
+    """签名用的服务器随机密钥（data/ 下，不进代码库）；第一次用时生成。"""
+    try:
+        return bytes.fromhex(_SECRET_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pass
+    _SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(_SECRET_FILE, "x", encoding="utf-8") as f:          # 两个会话同时生成时只认先写的那个
+            f.write(secrets.token_hex(32))
+        os.chmod(_SECRET_FILE, 0o600)
+    except FileExistsError:
+        pass
+    except OSError:
+        pass
+    return bytes.fromhex(_SECRET_FILE.read_text(encoding="utf-8").strip())
+
+
+def _password_material() -> str:
+    if settings.app_password_hash:
+        return settings.app_password_hash                              # 带盐：同一个密码重设一次也会变
+    return "plain:" + hashlib.sha256((settings.app_password or "").encode("utf-8")).hexdigest()
+
+
+def _sign(exp: int) -> str:
+    return hmac.new(_login_secret(), f"{exp}|{_password_material()}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def session_mark() -> str:
+    """本会话“已登录”的标记：跟着访问密码变，改了密码，开着的页面下一次操作也要重新登录。"""
+    return hashlib.sha256(_password_material().encode("utf-8")).hexdigest()[:16]
+
+
+def issue_token(now: float | None = None) -> str:
+    exp = int((now if now is not None else time.time()) + REMEMBER_DAYS * 86400)
+    return f"{exp}.{_sign(exp)}"
+
+
+def token_ok(token: str | None, now: float | None = None) -> bool:
+    try:
+        exp_s, sig = (token or "").split(".", 1)
+        exp = int(exp_s)
+    except ValueError:
+        return False
+    now = now if now is not None else time.time()
+    if not (now < exp <= now + REMEMBER_DAYS * 86400 + 60):
+        return False
+    return hmac.compare_digest(sig, _sign(exp))
 
 
 # ---------------- 核心密钥 ----------------
@@ -85,4 +146,4 @@ def change_password(admin_key: str, new_pw: str, confirm: str) -> tuple[bool, st
     from .envfile import set_env
 
     set_env({"APP_PASSWORD_HASH": hash_secret(new_pw)}, remove=["APP_PASSWORD"])
-    return True, "访问密码已修改：其他人下次打开网页要用新密码。"
+    return True, "访问密码已修改：之前记住登录的设备都已失效，下次打开网页要用新密码登录。"

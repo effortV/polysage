@@ -349,7 +349,14 @@ def _render_pw() -> None:
         again = st.text_input("再输一次新密码", type="password")
         if st.form_submit_button("修改", type="primary", icon=":material/lock_reset:"):
             ok, msg = auth.change_password(key, new, again)
+            if ok:
+                ui.keep_login_after_password_change()      # 改的人这台设备换成新密码的登录，不用马上重登
             (st.success if ok else st.error)(msg)
+    if auth.password_required():
+        st.caption(f"登录时勾了“{auth.REMEMBER_DAYS} 天内免登录”，这台设备就不用每次输密码；改了访问密码，所有设备都要重新登录。")
+        if st.button("退出登录（这台设备）", icon=":material/logout:", key="logout_btn"):
+            ui.logout()
+            st.rerun()
 
 
 def _render_task() -> None:

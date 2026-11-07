@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 
 from polysage import chat_widget, jobs, ui
-from polysage.agents import runner
 from polysage.aba import optimize as O
 from polysage.aba import prices as P
 from polysage.aba import report as RP
@@ -79,12 +78,12 @@ GRADE_COLOR = {2: "blue", 1: "green", 0: "gray"}
 
 def _render_tab_chat() -> None:
     sid = chat_widget.get_or_create_session("advisor", "advisor_session")
-    with st.container(horizontal=True, horizontal_alignment="right"):
-        if st.button("新对话", key="new_advisor", icon=":material/add_comment:"):
-            st.session_state["advisor_session"] = runner.create_session("advisor")
-            st.rerun()
-    chat_widget.render_session_chat(sid, "说要求：性能不降最低多少钱 / 三档透光各给最便宜的 / 现在价格多少 / 有没有新材料…",
-                                    key="advisor_chat", examples=chat_widget.ADVISOR_EXAMPLES)
+    side, main = st.columns([1.3, 3.4], gap="medium")
+    with side:
+        chat_widget.render_history("advisor", "advisor_session", sid)     # 新对话 + 历史对话（点开 / 删除）
+    with main:
+        chat_widget.render_session_chat(sid, "说要求：性能不降最低多少钱 / 三档透光各给最便宜的 / 现在价格多少 / 有没有新材料…",
+                                        key="advisor_chat", examples=chat_widget.ADVISOR_EXAMPLES)
 
 
 def _card(ev: dict, g: int, gname: str) -> None:

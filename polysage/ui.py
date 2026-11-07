@@ -95,6 +95,11 @@ img.stLogo, img[data-testid="stLogo"], img[data-testid="stSidebarLogo"] {height:
 .ps-activity-log {margin-top: 0.4rem; padding-top: 0.35rem; border-top: 1px dashed #E2E6EC; color: #6B7480; font-family: ui-monospace, Consolas, monospace; font-size: 0.7rem; line-height: 1.45;}
 .ps-activity-log .t {color: #9CA3AF; margin-right: 6px;}
 .ps-activity-log .bad {color: #B3261E;}
+/* 配方助手左边的历史对话：标题左对齐、一行放不下就省略 */
+.st-key-chat_hist .stButton button {justify-content: flex-start; text-align: left; min-width: 0;}
+.st-key-chat_hist .stButton button div, .st-key-chat_hist .stButton button p {min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+/* 写登录 cookie 的小脚本：藏起来，不占位置 */
+.st-key-hn_login_js, [data-testid="stLayoutWrapper"]:has(> .st-key-hn_login_js) {display: none !important;}
 </style>
 """
 
@@ -213,12 +218,52 @@ def sidebar_activity() -> None:
         _panel()
 
 
-def password_gate(_legacy: str | None = None) -> None:
-    """访问密码：没设直接放行；设了就在本会话首次打开时要求输入，之后不再问（比对哈希）。"""
+HAS_HTML_JS = _has_param(st.html, "unsafe_allow_javascript")
+
+
+def _login_cookie_js(token: str | None) -> None:
+    """在浏览器里写（或清掉）记住登录的 cookie。脚本放在藏起来的容器里，不占页面位置。"""
     from . import auth
 
-    if not auth.password_required() or st.session_state.get("_authed"):
+    val, age = (token, auth.REMEMBER_DAYS * 86400) if token else ("", 0)
+    js = ("<script>(function(){var s=location.protocol==='https:'?'; Secure':'';"
+          f"document.cookie='{auth.COOKIE}={val}; Max-Age={age}; Path=/; SameSite=Lax'+s;}})();</script>")
+    with st.container(key="hn_login_js"):
+        if HAS_HTML_JS:
+            st.html(js, unsafe_allow_javascript=True)
+        else:  # 旧版：组件 iframe 与页面同源，写的是同一个站点的 cookie
+            import streamlit.components.v1 as components
+
+            components.html(js, height=0)
+
+
+def _cookie(name: str) -> str | None:
+    try:
+        return st.context.cookies.get(name)
+    except Exception:  # noqa: BLE001  旧版没有 st.context.cookies / 测试环境
+        return None
+
+
+def password_gate(_legacy: str | None = None) -> None:
+    """访问密码：没设直接放行；设了就要求输入（比对哈希）。
+
+    勾了“记住”，这台设备 30 天内打开网页不用再输；改了访问密码，所有设备记住的登录都失效，重新登录即可。
+    """
+    from . import auth
+
+    if not auth.password_required():
         return
+    mark = auth.session_mark()
+    if st.session_state.get("_authed") != mark and not st.session_state.get("_logged_out"):
+        if auth.token_ok(_cookie(auth.COOKIE)):
+            st.session_state["_authed"] = mark
+    if st.session_state.get("_authed") == mark:
+        if st.session_state.get("_login_cookie"):
+            _login_cookie_js(st.session_state["_login_cookie"])
+        return
+    st.session_state.pop("_login_cookie", None)
+    if st.session_state.pop("_clear_login_cookie", False) or _cookie(auth.COOKIE):
+        _login_cookie_js(None)        # 退出登录 / 密码改了：把这台设备上失效的记住登录清掉
     _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
         st.space("large")
@@ -226,13 +271,34 @@ def password_gate(_legacy: str | None = None) -> None:
         st.caption("请输入访问密码")
         with st.form("login", border=True):
             pw = st.text_input("访问密码", type="password", label_visibility="collapsed", placeholder="访问密码")
+            remember = st.checkbox(f"这台设备 {auth.REMEMBER_DAYS} 天内免登录", value=True,
+                                   help="公用电脑请取消勾选。改了访问密码后，记住的登录会失效，要重新登录。")
             ok = st.form_submit_button("进入", type="primary", width="stretch")
         if ok:
             if auth.check_password(pw):
-                st.session_state["_authed"] = True
+                st.session_state["_authed"] = mark
+                st.session_state.pop("_logged_out", None)
+                if remember:
+                    st.session_state["_login_cookie"] = auth.issue_token()
                 st.rerun()
             st.error("密码不对。")
     st.stop()
+
+
+def logout() -> None:
+    """退出这台设备的登录（清掉记住的 30 天登录）。"""
+    for k in ("_authed", "_login_cookie"):
+        st.session_state.pop(k, None)
+    st.session_state["_logged_out"] = True
+    st.session_state["_clear_login_cookie"] = True
+
+
+def keep_login_after_password_change() -> None:
+    """改密码的人自己不用马上重登：给这个会话和这台设备换成新密码的登录。"""
+    from . import auth
+
+    st.session_state["_authed"] = auth.session_mark()
+    st.session_state["_login_cookie"] = auth.issue_token()
 
 
 def page_header(title: str, subtitle: str | None = None) -> None:
