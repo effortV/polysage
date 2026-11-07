@@ -103,10 +103,20 @@ def _label(name: str) -> str:
 
 
 def start_sourcing(families: list[str] | None = None, **kw: Any) -> bool:
-    """网查同类报价（按日报口径：厂家+牌号+仓库地+状态+含税价），只作对照。"""
+    """网查同类报价（按日报口径：厂家+牌号+仓库地+状态+含税价），查完按网查行情更新价格卡的估计价
+    （估计价只在贸易商日报过期时才顶上，日报新的时候不影响）。"""
     from . import daily_quotes
 
-    return start("sourcing", lambda: daily_quotes.web_market_quotes(families, **kw))
+    def _run() -> dict[str, Any]:
+        out = daily_quotes.web_market_quotes(families, **kw)
+        applied = daily_quotes.apply_web_market([f for f in (families or ["LLDPE", "LDPE", "HDPE"])
+                                                 if f in ("LLDPE", "LDPE", "HDPE")])
+        for a in applied:
+            daily_quotes.sourcing._log(f"[{a['family']}] 价格卡（日报过期时用）：" + (f"{a['price']:.0f}，{a['text']}" if a.get("applied")
+                                                                              else f"没改，{a['text']}"))
+        return out
+
+    return start("sourcing", _run)
 
 
 def start(name: str, fn: Callable[[], Any]) -> bool:

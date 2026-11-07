@@ -241,6 +241,19 @@ CREATE TABLE IF NOT EXISTS supplier_quotes (
 );
 CREATE INDEX IF NOT EXISTS ix_quotes_mat ON supplier_quotes(material_code, status);
 
+-- 生意社基准价（全国现货指数，每天都有）：用来把最近一期华东市场价推到最新一天
+CREATE TABLE IF NOT EXISTS price_index (
+    id INTEGER PRIMARY KEY,
+    family TEXT NOT NULL,
+    index_date TEXT NOT NULL,
+    value REAL NOT NULL,
+    kind TEXT NOT NULL,
+    source TEXT,
+    url TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(family, index_date, kind)
+);
+
 CREATE TABLE IF NOT EXISTS sourcing_runs (
     id INTEGER PRIMARY KEY,
     at TEXT NOT NULL,

@@ -53,10 +53,7 @@ def _market_job() -> dict[str, Any]:
         summary["web"] = {fam: f"{v.get('rows', 0)} 条" for fam, v in (web or {}).items()}
         applied = daily_quotes.apply_web_market(["LLDPE", "LDPE", "HDPE"])
         if applied:
-            summary["price_card"] = {a["family"]: (f"{a['median']:.0f}（{a['tier']} {a['n']} 条，{a['low']:.0f}~{a['high']:.0f}，{a['date']}）"
-                                                   + (f"，其他口径 {a['others'][0]:.0f}~{a['others'][1]:.0f} 未计入" if a.get("others") else "")
-                                                   if a.get("applied") else
-                                                   f"没写（只有厂家挂牌价/机构评述 {a['low']:.0f}~{a['high']:.0f}，通常高于成交价）")
+            summary["price_card"] = {a["family"]: (f"{a['price']:.0f}（{a['text']}）" if a.get("applied") else f"没改（{a['text']}）")
                                      for a in applied}
     except Exception as e:  # noqa: BLE001
         summary["web_error"] = str(e)[:120]
@@ -112,7 +109,8 @@ def start_research(scope: str = "新材料"):
       "用户问“现在多少钱 / 最新价格 / 行情怎么样”且价格卡已经旧了时用；等结果的同时，可以先用 aba_prices 给按期货修正的估算。", {})
 def refresh_market():
     return _start("market_refresh", _market_job) + ("大约 5~10 分钟。贸易商日报才是正式价；日报超过 3 周没更新时，价格卡按网查的华东市场价"
-                                                     "中位数计（厂家挂牌价、机构评述不算）。进度用 background_status 查。"), []
+                                                     "中位数计（厂家挂牌价、机构评述不算）；华东市场价停更时，按生意社基准价的涨跌推到最新一天。"
+                                                     "进度用 background_status 查。"), []
 
 
 @tool("background_status", "看后台任务：正在跑什么、跑了多久，以及最近几次找新材料 / 文献调研 / 更新行情的结果摘要。", {})

@@ -351,8 +351,12 @@ def find_suppliers(code: str, extra: str = ""):
         return f"{code} 不属于 LLDPE/LDPE/HDPE/mLLDPE，网查只支持这四类。", []
     s = daily_quotes.web_market_quotes([fam], depth="快", pages_per_query=2)[fam]
     rows = daily_quotes.web_rows(fam)
+    card = daily_quotes.apply_web_market([fam]) if fam in ("LLDPE", "LDPE", "HDPE") else []
     lines = [f"网查 {fam}：{s['pages']} 个页面，{s['rows']} 条近一周报价（新增 {s['new']}）。网查价未经询价核实；"
-             "贸易商日报过期（超过 3 周）时，价格卡按网查的华东市场价中位数计，厂家挂牌价、机构评述只作参考。"]
+             "贸易商日报过期（超过 3 周）时，价格卡按网查的华东市场价中位数计（停更时按生意社基准价涨跌推到最新一天），"
+             "厂家挂牌价、机构评述只作参考。"]
+    for a in card:
+        lines.append(f"价格卡（日报过期时用）：" + (f"{a['price']:.0f} 元/吨，{a['text']}" if a.get("applied") else f"没改，{a['text']}"))
     for r in rows:
         lines.append(f"- [{daily_quotes.quote_kind(r)}] {r['grade']} @ {r['warehouse'] or '未注明'}（{r['delivery'] or '-'}）含税 {r['price']:.0f}"
                      f" → 到厂 {r['landed_price']:.0f}，{daily_quotes.short_source(r['trader'])}，{r['quote_date']}")

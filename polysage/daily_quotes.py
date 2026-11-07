@@ -451,6 +451,12 @@ def web_market_quotes(families: list[str] | None = None, *, depth: str = "标准
     summary: dict[str, Any] = {}
     activity.note(f"网查同类报价：{'、'.join(families)}")
     feed_pages = market_feed_pages(today, echo=echo)          # 区域行情日报：每类都从里面抽一遍
+    if not feed_pages:
+        sourcing._log("区域行情日报近一周没有新的一期：华东市场价停在最近那期，按生意社基准价推到最新一天", echo)
+    try:
+        update_base_index(families, echo=echo)                 # 生意社基准价：每天都有，用来把华东市场价推到最新
+    except Exception as e:  # noqa: BLE001
+        sourcing._log(f"生意社基准价更新失败：{str(e)[:80]}", echo)
     for fam in families:
         seen: set[str] = {u for u, _, _ in feed_pages}
         pages: list[tuple[str, str, str]] = list(feed_pages)
@@ -537,19 +543,30 @@ WEB_TIERS = [("华东市场价", lambda r: quote_kind(r) in ("市场价", "贸�
              ("厂家挂牌价/机构评述（通常高于成交价）", lambda r: True)]
 
 
-def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | None:
-    """某类树脂近 days 天网查行情：去重 → 分层 → 到厂价中位数。返回 {median, n, date, low, high, tier, who, others}。"""
+def _clean_rows(fam: str, days: int) -> list[dict[str, Any]]:
+    """近 days 天的网查报价：只要膜料、价格像样的；同一条被几个网站转载、同一来源连着几天的同一个价只算一次（取最新）。"""
     rows, seen_copy, seen_src = [], set(), set()
-    for r in sorted(web_rows(fam, days=days, top=500), key=lambda x: str(x["quote_date"]), reverse=True):   # 新的在前
+    for r in sorted(web_rows(fam, days=days, top=1000), key=lambda x: str(x["quote_date"]), reverse=True):   # 新的在前
         if not 5000 <= float(r["landed_price"] or 0) <= 30000 or NON_FILM.search(r.get("grade") or ""):
             continue
         copy_key = (r.get("producer") or "", (r.get("grade") or "").strip(), round(float(r["price"] or 0)), str(r["quote_date"])[:10])
         src_key = (short_source(r.get("trader") or ""), r.get("warehouse") or "", r.get("producer") or "", (r.get("grade") or "").strip())
         if copy_key in seen_copy or src_key in seen_src:
-            continue                      # 同一条报价被几个网站转载、同一来源连着几天的同一个价：只算一次（取最新）
+            continue
         seen_copy.add(copy_key)
         seen_src.add(src_key)
         rows.append(r)
+    return rows
+
+
+def _median(vals: list[float]) -> float:
+    vals = sorted(vals)
+    return round(vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2, 0)
+
+
+def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | None:
+    """某类树脂近 days 天网查行情：去重 → 分层 → 到厂价中位数。返回 {median, n, date, low, high, tier, who, others}。"""
+    rows = _clean_rows(fam, days)
     if not rows:
         return None
     tier, use = WEB_TIERS[-1][0], rows
@@ -559,7 +576,7 @@ def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | 
             tier, use = name, sel
             break
     vals = sorted(float(r["landed_price"]) for r in use)
-    med = round(vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2, 0)
+    med = _median(vals)
     ids = {r["id"] for r in use}
     others = sorted(float(r["landed_price"]) for r in rows if r["id"] not in ids)
     return {"median": med, "n": len(use), "date": max(str(r["quote_date"]) for r in use)[:10], "low": vals[0], "high": vals[-1],
@@ -567,32 +584,209 @@ def web_market_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any] | 
             "others": (others[0], others[-1], len(others)) if others else None}
 
 
+# ---------------- 生意社基准价：把最近一期华东市场价推到最新一天 ----------------
+# 华东市场价（区域行情日报）定价格卡的水平，但它会停更（2026-11-02 之后就没再出，价格卡就一直停在 11-02）；
+# 生意社 LLDPE/LDPE/HDPE 基准价每天都有（同花顺、新浪转载，搜得到），水平比华东成交价高 7% 上下，但涨跌跟着现货走。
+# 所以：价格卡 = 最近一期华东市场价 × 生意社基准价从那天到最新一天的涨跌。
+# 期货基差太不稳（11-05 期货一天跌 6%，现货指数还在涨），不拿期货推。
+
+BASE_FAMILIES = ("LLDPE", "LDPE", "HDPE")
+BASE_RE = re.compile(r"(\d{1,2})月(\d{1,2})日\s*[,，]?\s*生意社\s*(LLDPE|LDPE|HDPE)\s*基准价为\s*([\d.]+)\s*元/吨"
+                     r"(\s*[,，]?\s*与本月初(?:\s*[（(]\s*([\d.]+)\s*元/吨\s*[)）])?\s*(持平)?)?")
+BASE_DAY_RE = re.compile(r"日涨幅[\s|:：]{0,6}([-+−]?\d+(?:\.\d+)?)%")      # “| -0.56%”：别把负号当分隔符吃掉
+ANCHOR_MAX_DAYS = 30      # 华东市场价最多往前找一个月当起点；再老就不推了
+INDEX_GAP_DAYS = 7        # 起点那天往前 7 天内要有基准价，才算得出涨跌
+_INDEX_RANK = {"当日": 0, "前一日": 1, "月初": 2}     # 同一天有几个数：文章直接给的当日价最准
+
+
+def parse_base_index(text: str, today: _date) -> list[dict[str, Any]]:
+    """从“11月6日，生意社LLDPE基准价为10350.00元/吨，与本月初(10275.00元/吨)相比…日涨幅 -0.56%”里取点：
+    当日价、月初价（1 号）、前一日价（按日涨幅倒推）。"""
+    import datetime as _dt
+
+    out: list[dict[str, Any]] = []
+    text = text or ""
+    ms = list(BASE_RE.finditer(text))
+    for i, m in enumerate(ms):
+        mon, day, fam, val = int(m.group(1)), int(m.group(2)), m.group(3), float(m.group(4))
+        year = today.year - (1 if mon > today.month else 0)
+        try:
+            d = _date(year, mon, day)
+        except ValueError:
+            continue
+        if d > today or not 1000 < val < 50000:
+            continue
+        out.append({"family": fam, "date": d.isoformat(), "value": val, "kind": "当日"})
+        first = d.replace(day=1)
+        if m.group(5) and first < d:
+            start = float(m.group(6)) if m.group(6) else (val if m.group(7) else None)
+            if start and 1000 < start < 50000:
+                out.append({"family": fam, "date": first.isoformat(), "value": start, "kind": "月初"})
+        tail = text[m.end(): ms[i + 1].start() if i + 1 < len(ms) else m.end() + 400]
+        dm = BASE_DAY_RE.search(tail)
+        pct = float(dm.group(1).replace("−", "-")) if dm else None
+        if pct is not None and -30 < pct < 30:
+            out.append({"family": fam, "date": (d - _dt.timedelta(days=1)).isoformat(),
+                        "value": round(val / (1 + pct / 100), 2), "kind": "前一日"})
+    return out
+
+
+def save_base_index(points: list[dict[str, Any]], *, source: str = "生意社基准价", url: str = "") -> int:
+    n = 0
+    for p in points:
+        if not db.q1("SELECT 1 FROM price_index WHERE family=? AND index_date=? AND kind=?", (p["family"], p["date"], p["kind"])):
+            n += 1
+        db.execute("INSERT INTO price_index (family, index_date, value, kind, source, url, created_at) VALUES (?,?,?,?,?,?,?) "
+                   "ON CONFLICT(family, index_date, kind) DO UPDATE SET value=excluded.value, source=excluded.source, "
+                   "url=excluded.url, created_at=excluded.created_at",
+                   (p["family"], p["date"], p["value"], p["kind"], source, url, db.now()))
+    return n
+
+
+def base_series(fam: str) -> dict[str, float]:
+    """{日期: 基准价}；同一天有几个数时取最准的（当日价 > 前一日倒推 > 月初）。"""
+    best: dict[str, tuple[int, float]] = {}
+    for r in db.q("SELECT index_date, value, kind FROM price_index WHERE family=?", (fam,)):
+        rank = _INDEX_RANK.get(r["kind"], 9)
+        if r["index_date"] not in best or rank < best[r["index_date"]][0]:
+            best[r["index_date"]] = (rank, float(r["value"]))
+    return {d: v for d, (_, v) in sorted(best.items())}
+
+
+def update_base_index(families: list[str] | None = None, echo: Any = None, *, days_back: int = 2) -> dict[str, Any]:
+    """搜生意社基准价（同花顺 / 新浪转载的日报），解析后存起来。不调模型，几次搜索就够。"""
+    import datetime as _dt
+
+    from .sources.fetch import fetch_url
+    from .sources.websearch import search as web_search
+
+    today = _date.today()
+    out: dict[str, Any] = {}
+    for fam in [f for f in (families or BASE_FAMILIES) if f in BASE_FAMILIES]:
+        qs = [f"生意社 {fam}基准价"] + [f"{d.month}月{d.day}日生意社{fam}基准价"
+                                     for d in (today - _dt.timedelta(days=i) for i in range(days_back))]
+        new, seen = 0, set()
+        for q in qs:
+            try:
+                hits = web_search(q, limit=8, bing_first=True, timelimit="w")
+            except Exception as e:  # noqa: BLE001
+                sourcing._log(f"[{fam}] 生意社基准价搜索失败「{q}」：{str(e)[:60]}", echo)
+                continue
+            for h in hits:
+                if not h.url or h.url in seen:
+                    continue
+                seen.add(h.url)
+                pts = parse_base_index(f"{h.title or ''}\n{h.abstract or ''}", today)
+                if not any(p["kind"] == "月初" for p in pts) and "基准价" in (h.title or ""):
+                    try:                                          # 摘要截断了：读全文（只读标题里就是基准价的）
+                        pts = parse_base_index(fetch_url(h.url).get("text") or "", today) or pts
+                    except Exception:  # noqa: BLE001
+                        pass
+                new += save_base_index(pts, url=h.url)
+        s = base_series(fam)
+        last = max(s) if s else None
+        out[fam] = {"new": new, "last": last, "value": s.get(last) if last else None}
+        sourcing._log(f"[{fam}] 生意社基准价：新增 {new} 个点" + (f"，最新 {last} {s[last]:.0f}" if last else "，一个也没找到"), echo)
+    return out
+
+
+def market_anchor(fam: str, max_days: int = ANCHOR_MAX_DAYS) -> dict[str, Any] | None:
+    """最近一期华东市场价（一个月内）：最新那一天各来源到厂价的中位数。"""
+    rows = [r for r in _clean_rows(fam, max_days) if WEB_TIERS[0][1](r)]
+    if not rows:
+        return None
+    last = max(str(r["quote_date"])[:10] for r in rows)
+    use = [r for r in rows if str(r["quote_date"])[:10] == last]
+    return {"median": _median([float(r["landed_price"]) for r in use]), "n": len(use), "date": last,
+            "who": "、".join(dict.fromkeys(short_source(r.get("trader") or "")[:16] for r in use))[:60]}
+
+
+def market_nowcast(fam: str) -> dict[str, Any] | None:
+    """华东市场价 × 生意社基准价的涨跌 → 推到基准价的最新一天。推不了返回 None。"""
+    import datetime as _dt
+
+    a = market_anchor(fam)
+    s = base_series(fam)
+    if not a or not s:
+        return None
+    d1 = max(s)
+    if d1 <= a["date"]:
+        return None
+    lo = (_date.fromisoformat(a["date"]) - _dt.timedelta(days=INDEX_GAP_DAYS)).isoformat()
+    before = [d for d in s if lo <= d <= a["date"]]
+    if not before:
+        return None
+    d0 = max(before)
+    ratio = s[d1] / s[d0]
+    return {"price": round(a["median"] * ratio / 10) * 10, "date": d1, "anchor": a, "i0": (d0, s[d0]), "i1": (d1, s[d1]),
+            "pct": round((ratio - 1) * 100, 2)}
+
+
+def _md(d: str | None) -> str:
+    return str(d or "")[5:10]
+
+
+def _pick_source(fam: str, pick: dict[str, Any], days: int) -> str:
+    return (f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} {pick['tier']} 近 {days} 天 {pick['n']} 条（{pick['who']}），含运费到厂"
+            + (f"；另有 {pick['others'][2]} 条其他口径 {pick['others'][0]:.0f}~{pick['others'][1]:.0f} 未计入" if pick["others"] else ""))
+
+
+def market_card_pick(fam: str, days: int = WEB_MAX_AGE_DAYS) -> dict[str, Any]:
+    """贸易商日报过期时价格卡该用的网查价（apply_web_market 和页面都看这个）：
+    1) 有一个月内的华东市场价、又有更新的生意社基准价 → 推到基准价最新那天；
+    2) 否则近一周的华东市场价中位；
+    3) 一个月内有华东市场价但推不了 → 价格卡不动（不拿全国价、挂牌价顶：它们比成交价高 7%~10%）；
+    4) 一个月内都没有华东市场价 → 近一周全国市场价/基准价中位；只有厂家挂牌价/机构评述就不写。"""
+    pick = web_market_pick(fam, days)
+    now = market_nowcast(fam)
+    if now:
+        a, (d0, v0), (d1, v1) = now["anchor"], now["i0"], now["i1"]
+        src = (f"网查行情推算：{FAMILY_LABEL.get(fam, fam)} 华东市场价 {a['date']} {a['median']:.0f}（{a['who']}）"
+               f"按生意社{fam}基准价 {d0} {v0:.0f} → {d1} {v1:.0f}（{now['pct']:+.2f}%）推到 {d1}，含运费到厂")
+        return {"family": fam, "price": now["price"], "date": d1, "how": "推算", "source": src, "pick": pick, "nowcast": now,
+                "text": f"华东市场价 {_md(a['date'])} {a['median']:.0f} × 生意社基准价 {_md(d0)}→{_md(d1)} {now['pct']:+.2f}%，推到 {_md(d1)}"}
+    if pick and pick["tier"] == WEB_TIERS[0][0]:
+        return {"family": fam, "price": pick["median"], "date": pick["date"], "how": pick["tier"], "pick": pick,
+                "source": _pick_source(fam, pick, days), "text": f"华东市场价 {pick['n']} 条中位，{_md(pick['date'])}"}
+    a = market_anchor(fam)
+    if a:
+        return {"family": fam, "price": None, "date": a["date"], "how": "不动", "pick": pick,
+                "text": f"最近的华东市场价是 {_md(a['date'])} 的 {a['median']:.0f}，之后没找到更新的生意社基准价，价格卡先不动"}
+    if pick and pick["tier"] != WEB_TIERS[-1][0]:
+        return {"family": fam, "price": pick["median"], "date": pick["date"], "how": pick["tier"], "pick": pick,
+                "source": _pick_source(fam, pick, days), "text": f"{pick['tier']} {pick['n']} 条中位，{_md(pick['date'])}（没有华东市场价）"}
+    return {"family": fam, "price": None, "date": pick["date"] if pick else None, "how": "不写", "pick": pick,
+            "text": (f"只有厂家挂牌价/机构评述 {pick['low']:.0f}~{pick['high']:.0f}（通常高于成交价），不写价格卡" if pick
+                     else "近一周没有网查行情")}
+
+
 def apply_web_market(families: list[str] | None = None, days: int = WEB_MAX_AGE_DAYS) -> list[dict[str, Any]]:
-    """把近一周网查行情的到厂价中位数写成估计价：贸易商日报过期时，算方案就用它（见 materials.effective_prices）。
-    用中位数不用最低：网查最低价常是促销、旧货或抽错；优先华东市场价，厂家挂牌价和机构评述最后才用。"""
+    """按 market_card_pick 把网查行情写成估计价：贸易商日报过期时，算方案就用它（见 materials.effective_prices）。
+    用中位数不用最低：网查最低价常是促销、旧货或抽错；优先华东市场价，厂家挂牌价和机构评述不写。"""
     out = []
     for fam in families or ["LLDPE", "LDPE", "HDPE"]:
         code = _code_for(fam)
-        pick = web_market_pick(fam, days)
-        if not code or not pick:
+        if not code:
             continue
-        if pick["tier"] == WEB_TIERS[-1][0]:
-            # 只有厂家挂牌价 / 机构评述：实测比贸易商成交价高 10% 上下（2026-11 万华 7042 挂 10700，华东市场 9630），不写价格卡
-            out.append({"family": fam, "code": code, **pick, "applied": False})
+        cp = market_card_pick(fam, days)
+        pick = cp.get("pick") or {}
+        item = {"family": fam, "code": code, **pick, "how": cp["how"], "text": cp["text"], "price": cp["price"],
+                "date": cp["date"], "applied": cp["price"] is not None}
+        if cp["price"] is None:
+            if pick or cp["how"] == "不动":
+                out.append(item)
             continue
-        src = (f"网查行情中位：{FAMILY_LABEL.get(fam, fam)} {pick['tier']} 近 {days} 天 {pick['n']} 条（{pick['who']}），含运费到厂"
-               + (f"；另有 {pick['others'][2]} 条其他口径 {pick['others'][0]:.0f}~{pick['others'][1]:.0f} 未计入" if pick["others"] else ""))
         eff = MAT.effective_prices()
         for c in FAMILY_CODES.get(fam, [code]):                  # 同类所有代码一起（LL / LLC 都是 7042）
             if not MAT.get_material(c):
                 continue
             cur = eff.get(c) or {}
-            if (cur.get("type") == "estimate" and abs(cur.get("price", 0) - pick["median"]) < 1
-                    and str(cur.get("date", ""))[:10] == pick["date"] and cur.get("source") == src):
+            if (cur.get("type") == "estimate" and abs(cur.get("price", 0) - cp["price"]) < 1
+                    and str(cur.get("date", ""))[:10] == cp["date"] and cur.get("source") == cp["source"]):
                 continue
-            pricing.record_price(c, pick["median"], "estimate", price_date=pick["date"], source=src,
+            pricing.record_price(c, cp["price"], "estimate", price_date=cp["date"], source=cp["source"],
                                  note="网查行情，未询价核实；有新的贸易商日报会优先用日报")
-        out.append({"family": fam, "code": code, **pick, "applied": True})
+        out.append(item)
     return out
 
 

@@ -208,3 +208,107 @@ def test_web_market_film_grades_only(home):
     p = D.web_market_pick("HDPE")
     assert p["median"] == 9360 and p["n"] == 1
     db.execute("DELETE FROM supplier_quotes WHERE family='HDPE' AND channel='网查'")
+
+
+ARTICLE = ("生意社11月06日讯\n11月6日，生意社LLDPE基准价为10350.00元/吨，与本月初(10275.00元/吨)相比，上涨了0.73%。\n"
+           "LLDPE年度统计\n(2025-11-06--2026-11-06,元/吨)\n| 当日价 | 10350.00 | \n| 日涨幅 | -0.56% | \n| 一年位置 | 高位 |")
+
+
+def test_parse_base_index():
+    """生意社基准价日报：当日价、月初价、按日涨幅倒推的前一日价；标题（没有“与本月初”）、“与本月初持平”都认。"""
+    import datetime as _dt
+
+    today = _dt.date(2026, 11, 7)
+    pts = {(p["family"], p["date"], p["kind"]): p["value"] for p in D.parse_base_index(ARTICLE, today)}
+    assert pts[("LLDPE", "2026-11-06", "当日")] == 10350 and pts[("LLDPE", "2026-11-01", "月初")] == 10275
+    assert abs(pts[("LLDPE", "2026-11-05", "前一日")] - 10350 / 0.9944) < 0.01
+    flat = D.parse_base_index("11月2日生意社LDPE基准价为12766.67元/吨\n生意社11月02日讯11月2日,生意社LDPE基准价为12766.67元/吨,与本月初持平。"
+                              "当日价12766.67日涨幅0.00%", today)
+    kinds = {(p["family"], p["date"], p["kind"]): p["value"] for p in flat}
+    assert kinds[("LDPE", "2026-11-02", "当日")] == 12766.67 and kinds[("LDPE", "2026-11-01", "月初")] == 12766.67
+    assert not any(p["family"] == "LLDPE" for p in flat)                          # LDPE 不会认成 LLDPE
+    assert D.parse_base_index("12月30日，生意社HDPE基准价为9000.00元/吨", today)[0]["date"] == "2025-12-30"   # 跨年
+    assert D.parse_base_index("生意社2026年11月6日LLDPE趋势分析：温和回调", today) == []
+
+
+def _east(fam, price, day, trader="区域行情日报", wh="华东", kind="市场价"):
+    return {"family": fam, "producer": "", "grade": "膜料", "warehouse": wh, "delivery": "市场价", "price": price, "tax_included": True,
+            "note": kind, "freight": 0, "landed": price, "trader": trader, "date": day, "url": "https://x.test/" + trader + day}
+
+
+def test_market_nowcast_pushes_east_price_to_latest_index(home):
+    """华东市场价停更：价格卡 = 最近一期华东市场价 × 生意社基准价的涨跌，日期是基准价的最新一天；日报新的时候还是用日报。"""
+    import datetime as _dt
+
+    MAT.seed_materials()
+    db.execute("DELETE FROM supplier_quotes WHERE family='LDPE' AND channel='网查'")      # 前面测试留下的
+    t = _dt.date.today()
+    d = lambda n: (t - _dt.timedelta(days=n)).isoformat()                       # noqa: E731
+    MAT.add_price("LD", 12150, "actual", source="贸易商日报（旧）", price_date=d(40))
+    D.save_rows([_east("LDPE", 12000, d(5)), _east("LDPE", 12200, d(5), trader="另一家行情")], channel="网查", credibility=3)
+    assert D.market_card_pick("LDPE")["how"] == "华东市场价"                       # 还没有基准价：照旧用华东市场价
+    D.save_base_index([{"family": "LDPE", "date": d(6), "value": 13000, "kind": "月初"},
+                       {"family": "LDPE", "date": d(1), "value": 13130, "kind": "当日"}])
+    cp = D.market_card_pick("LDPE")
+    assert cp["how"] == "推算" and cp["date"] == d(1) and cp["price"] == round(12100 * 1.01 / 10) * 10
+    assert cp["nowcast"]["pct"] == 1.0 and "推到" in cp["text"]
+    out = D.apply_web_market(["LDPE"])
+    assert out[0]["applied"] and out[0]["date"] == d(1)
+    eff = MAT.effective_prices()["LD"]
+    assert eff["price"] == cp["price"] and eff["date"] == d(1) and eff["source"].startswith("网查行情推算")
+    assert D.apply_web_market(["LDPE"]) and len([r for r in MAT.price_history("LD") if str(r["source"]).startswith("网查行情推算")]) == 1  # 不重复写
+    MAT.add_price("LD", 12500, "actual", source="新日报", price_date=t.isoformat())   # 新日报来了就用日报
+    assert MAT.effective_prices()["LD"]["price"] == 12500
+    db.execute("DELETE FROM prices WHERE material_code='LD' AND (source IN ('贸易商日报（旧）', '新日报') OR source LIKE '网查行情%')")
+    db.execute("DELETE FROM supplier_quotes WHERE family='LDPE' AND channel='网查'")
+    db.execute("DELETE FROM price_index WHERE family='LDPE'")
+
+
+def test_stale_east_price_is_not_replaced_by_national_benchmark(home):
+    """华东市场价超过一周、又推不了（没有更新的基准价）：价格卡不动，不拿比成交价高 7% 的全国基准价顶上。"""
+    import datetime as _dt
+
+    MAT.seed_materials()
+    db.execute("DELETE FROM supplier_quotes WHERE family='HDPE' AND channel='网查'")
+    t = _dt.date.today()
+    d = lambda n: (t - _dt.timedelta(days=n)).isoformat()                       # noqa: E731
+    D.save_rows([_east("HDPE", 9360, d(10)), _east("HDPE", 11200, d(1), trader="生意社基准价", wh="全国", kind="基准价")],
+                channel="网查", credibility=3)
+    assert D.web_market_pick("HDPE")["tier"] == "全国市场价/基准价"               # 近一周只剩全国基准价
+    before = MAT.effective_prices().get("HD")
+    cp = D.market_card_pick("HDPE")
+    assert cp["how"] == "不动" and cp["price"] is None and "价格卡先不动" in cp["text"]
+    out = D.apply_web_market(["HDPE"])
+    assert out[0]["applied"] is False and MAT.effective_prices().get("HD") == before
+    D.save_base_index([{"family": "HDPE", "date": d(11), "value": 11000, "kind": "当日"},
+                       {"family": "HDPE", "date": d(1), "value": 11200, "kind": "当日"}])
+    cp = D.market_card_pick("HDPE")                                              # 有了基准价就推上来
+    assert cp["how"] == "推算" and cp["price"] == round(9360 * 11200 / 11000 / 10) * 10 and cp["date"] == d(1)
+    db.execute("DELETE FROM supplier_quotes WHERE family='HDPE' AND channel='网查'")
+    db.execute("DELETE FROM price_index WHERE family='HDPE'")
+
+
+def test_update_base_index_from_search(monkeypatch, home):
+    """搜生意社基准价：摘要里有完整一句就直接取；标题是基准价、摘要截断了才读全文；不调模型。"""
+    import polysage.sources.fetch as F
+    import polysage.sources.websearch as W
+    from polysage.sources.base import SearchHit
+
+    t = __import__("datetime").date.today()
+    md = f"{t.month}月{t.day}日"
+    hits = [SearchHit(provider="bing", external_id="a", title=f"{md}生意社LLDPE基准价为10350.00元/吨", source_type="web",
+                      url="https://goodsfu.test/a", abstract=f"生意社讯{md},生意社LLDPE基准价为10350.00元/吨,与本月初(10275.00元/吨)相比,上涨"),
+            SearchHit(provider="bing", external_id="b", title=f"{md}生意社LLDPE基准价为10350.00元/吨", source_type="web",
+                      url="https://goodsfu.test/b", abstract=f"{md},生意社LLDPE基准价为10350.00元/吨,与本月"),
+            SearchHit(provider="bing", external_id="c", title="LLDPE 趋势分析", source_type="web", url="https://goodsfu.test/c", abstract="无关")]
+    fetched = []
+    monkeypatch.setattr(W, "search", lambda q, limit=8, **kw: hits)
+    monkeypatch.setattr(F, "fetch_url", lambda url: fetched.append(url) or {"text": ARTICLE.replace("11月6日", md)})
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("不该调模型")))
+    out = D.update_base_index(["LLDPE"])
+    assert out["LLDPE"]["last"] == t.isoformat() and out["LLDPE"]["value"] == 10350
+    assert fetched == ["https://goodsfu.test/b"]                                 # 只有摘要截断的那篇读了全文
+    s = D.base_series("LLDPE")
+    if t.day > 1:
+        assert s[t.replace(day=1).isoformat()] == 10275
+    db.execute("DELETE FROM price_index WHERE family='LLDPE'")

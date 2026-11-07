@@ -165,8 +165,9 @@ def _render_tab_forecast() -> None:
 
 # ---------------- 网查对照 ----------------
 def _render_tab_run() -> None:
-    st.caption("按贸易商日报同样的口径（厂家 + 牌号 + 仓库地 + 货物状态 + 含税价）到行情站/报价页和区域行情日报网查近一周的报价。"
-               "贸易商日报超过 3 周没更新时，价格卡按网查的华东市场价中位数计；厂家挂牌价、期货公司评述通常偏高，只作参考，不写价格卡。"
+    st.caption("按贸易商日报同样的口径（厂家 + 牌号 + 仓库地 + 货物状态 + 含税价）到行情站/报价页和区域行情日报网查近一周的报价，"
+               "查完自动更新价格卡的估计价。贸易商日报超过 3 周没更新时，价格卡按网查的华东市场价计；华东市场价停更时，"
+               "按生意社基准价（每天都有的全国现货指数）这几天的涨跌推到最新一天。厂家挂牌价、期货公司评述通常偏高，只作参考，不写价格卡。"
                "检索目标取自最近日报里的厂家+牌号（没有日报时用默认牌号表）。")
     fams = [f for f in daily_quotes.FAMILIES if f != "其他"]
     c1, c2 = st.columns([3, 1])
@@ -234,18 +235,23 @@ def _render_tab_run() -> None:
 
 
 def _render_web_compare(fams: list[str]) -> None:
-    rows, picks = [], []
+    rows, picks, idx = [], [], []
     for f in fams:
         for i, r in enumerate(daily_quotes.web_rows(f, top=8), 1):
             rows.append({"类别": daily_quotes.FAMILY_LABEL[f], "名次": i, "口径": daily_quotes.quote_kind(r), "牌号": r["grade"],
                          "仓库地": r["warehouse"], "货物状态": r["delivery"], "含税价": r["price"], "到厂价": r["landed_price"],
                          "报价方": daily_quotes.short_source(r["trader"]), "日期": r["quote_date"], "来源": r["source_url"]})
-        p = daily_quotes.web_market_pick(f)
-        if p:
-            picks.append(f"{daily_quotes.FAMILY_LABEL[f]}：{p['median']:.0f}（{p['tier']} {p['n']} 条）"
-                         + ("——只有挂牌价/评述，不写价格卡" if p["tier"] == daily_quotes.WEB_TIERS[-1][0] else ""))
+        cp = daily_quotes.market_card_pick(f)
+        if cp["pick"] or cp["how"] != "不写":
+            picks.append(f"{daily_quotes.FAMILY_LABEL[f]}：" + (f"**{cp['price']:.0f}**（{cp['text']}）" if cp["price"] else cp["text"]))
+        s = daily_quotes.base_series(f) if f in daily_quotes.BASE_FAMILIES else {}
+        if s:
+            last = max(s)
+            idx.append(f"{f} {s[last]:.0f}（{last[5:]}）")
     if picks:
-        st.caption("网查行情中位（日报过期时价格卡用它）：" + "；".join(picks))
+        st.markdown("**价格卡（贸易商日报过期时用）**：" + "；".join(picks).replace("~", "\\~"))
+    if idx:
+        st.caption("生意社基准价（全国现货指数，每天都有；水平比华东成交价高 7% 上下，只用它的涨跌）：" + "；".join(idx))
     if rows:
         st.subheader("网查对照（近一周，每类前 8）")
         st.dataframe(pd.DataFrame(rows), hide_index=True, column_config={"来源": st.column_config.LinkColumn()}, **ui.WIDE)
