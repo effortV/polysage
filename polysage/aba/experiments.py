@@ -20,6 +20,7 @@ from .model import DEFAULT_T_REF, Ctx, Design, base_design, layer_text
 
 GRADE_CENTER = {0: 0.3, 1: 1.05, 2: 1.8}     # 透光档 → 透光分的中位，用来校准透光系数
 RIDGE = 2.0                                  # 系数往先验收缩的力度：数据越少越不动
+MAX_ROUND = 150                              # 一轮最多几组（页面、对话都按这个限）
 TEST_NOTE = [
     "拉断力：按 GB/T 1040.3 薄膜拉伸，样条宽 15 mm，纵向（MD）、横向（TD）各测不少于 3 条，填平均值（N）。",
     "透光：对照三块标样目视判档——0 一般 / 1 好 / 2 很好；拿不准就填偏低的那档。",
@@ -171,32 +172,45 @@ def _augment(F_fixed: np.ndarray, F_pool: np.ndarray, n: int, iters: int = 20) -
     return sel
 
 
-def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str = "current", n_exploit: int = 12,
-               n_new: int = 5, md_req: float | None = 1.0, td_req: float | None = 1.0, batch_kg: float = 100.0) -> dict[str, Any]:
-    """一整轮试验（默认 50 组）：
-    1. 现配方对照：3.5 / 4.5 / 5.5 丝各一组——拉断力的绝对值、厚度效应；
+def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str = "current", n_exploit: int | None = None,
+               n_new: int = 5, n_explore: int = 3, md_req: float | None = 1.0, td_req: float | None = 1.0,
+               batch_kg: float = 100.0, replace: bool = False) -> dict[str, Any]:
+    """一整轮试验（默认 50 组，最多 MAX_ROUND 组）：
+    0. 回填过新的实测就先校准（第 2 轮起，最省方案都按校准后的模型、当天的价格挑）；
+    1. 现配方对照：3.5 / 4.5 / 5.5 丝各一组——拉断力的绝对值、厚度效应（每轮都重做，看批次漂移）；
     2. 降本候选：按选定的价格，三个透光档各自预测最省、拉断力不低于现配方的方案（只用现有四种料）；
     3. 新料候选：库里买得到的新料里，预测比只用现有料更省的（要先确认料源与外观）；
-    4. 建模组：其余名额用 D-最优在六个因素上铺开（含平方与交互），让回填后的机器学习能把系数、弯曲、交互学出来。
+    4. 探索：校准后透光还拿不准、测了就能确认能不能用更便宜配方做到某一档的；
+    5. 建模组：其余名额用 D-最优在六个因素上铺开（含平方与交互）——已经做过的配方算进去，新组补没测过的区域。
+    replace=True：最近一轮还一组都没回填时，作废它、用这次的方案顶替（轮次号不变）。
     """
     from . import optimize as O
     from .prices import build as build_prices
+    from .prices import price_row
 
+    n_total = max(12, min(int(n_total), MAX_ROUND))
+    replaced = discard_round(next_round_no() - 1) if replace else 0
+    cal_info = ensure_calibrated(t_ref)
+    if n_exploit is None:
+        n_exploit = max(12, round(n_total * 0.2))
     ctx = Ctx(prices=build_prices(scenario)["prices"])
     ref = base_design(t_ref)
     items: list[tuple[Design, str]] = []
-    keys: set = {r["design"].key() for r in trials()}
+    before = trials()
+    keys: set = {r["design"].key() for r in before}
+    ctrl: set = set()
 
-    def add(d: Design, why: str) -> bool:
+    def add(d: Design, why: str, *, repeat: bool = False) -> bool:
         k = d.key()
-        if k in keys or len(items) >= n_total:
+        if len(items) >= n_total or (k in ctrl if repeat else k in keys):
             return False
+        (ctrl if repeat else keys).add(k)
         keys.add(k)
         items.append((d, why))
         return True
 
     for t in (3.5, 4.5, 5.5):
-        add(base_design(t), "现配方对照")
+        add(base_design(t), "现配方对照", repeat=True)
     ref_cost = ctx.cost(ref)
     q = {"md_req": md_req, "td_req": td_req, "scenario": scenario, "t_ref": t_ref, "top_k": 8}
     cur = O.run({**q, "use_new": False})
@@ -252,6 +266,17 @@ def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str
                 if add(ev["design"], f"新料：透光≥{R.GRADE_LABEL[g]}，用 {names}（{ev['cost']:.0f} 元/吨，{money}；先确认料源与外观）"):
                     k_new += 1
             rank += 1
+    # 探索：透光拿不准的（校准后才有）——点估计能上一档但没八成把握，测了就知道这档能不能用更便宜的配方做到
+    unsure = sorted((cur.get("uncertain") or {}).values(), key=lambda e: e["cost"] or 1e9)
+    unsure += sorted((ev for per_ in cur["groups"].values() for items_ in per_.values() for ev in items_
+                      if ev.get("grade_point", ev["grade"]) > ev["grade"]), key=lambda e: e["cost"] or 1e9)
+    k_exp = 0
+    for ev in unsure:
+        if k_exp >= n_explore:
+            break
+        gp = ev.get("grade_point", ev["grade"])
+        if add(ev["design"], f"探索：透光拿不准（点估计能到“{R.GRADE_LABEL[gp]}”，{ev['cost']:.0f} 元/吨），测了能确认"):
+            k_exp += 1
     # 建模组：D-最优补满
     pool, F = [], []
     for r_a in SPACE["r_a"]:
@@ -269,16 +294,22 @@ def plan_round(n_total: int = 50, *, t_ref: float = DEFAULT_T_REF, scenario: str
                             pool.append(d)
                             F.append(_factor_vec(r_a, r_b, f, h, a, t))
     fixed = [_factor_vec(*fx) for d, _ in items if (fx := _design_factors(d)) is not None]
+    fixed += [_factor_vec(*fx) for r in before if (fx := _design_factors(r["design"])) is not None]   # 以前做过的也算信息
     n_fill = n_total - len(items)
     if n_fill > 0 and pool:
         sel = _augment(np.array(fixed) if fixed else np.zeros((0, len(F[0]))), np.array(F), n_fill)
         picked = sorted((pool[j] for j in sel), key=lambda d: (d.a.get("R1", 0), d.b.get("HD", 0), d.b.get("FL", 0),
                                                                 d.b.get("R1", 0), d.a_ratio, d.thickness))
         for d in picked:
-            add(d, "建模：铺开六个因素")
+            add(d, "建模：补以前没测过的区域" if before else "建模：铺开六个因素")
     rn, saved = _save_round(items, t_ref)
+    used = sorted({c for d, _ in items for c in d.whole()} | set(O.CURRENT_CODES))
     meta = {"scenario": cur["scenario"], "query": cur["query"], "notes": cur["notes"], "n_pool": len(pool),
-            "counts": {}}
+            "counts": {}, "replaced": replaced, "prior_trials": len(before), "prior_measured": len(measured()),
+            "calibration": {k: cal_info.get(k) for k in ("ok", "fresh", "n", "md_rmse_pct", "td_rmse_pct", "grade_hit",
+                                                         "md_N_ref", "td_N_ref", "reason") if cal_info.get(k) is not None},
+            "prices": {c: {"price": ctx.prices.get(c), "date": str((price_row(c) or {}).get("price_date") or "")}
+                       for c in used if ctx.prices.get(c)}}
     for _, why in items:
         kind = why.split("：")[0]
         meta["counts"][kind] = meta["counts"].get(kind, 0) + 1
@@ -538,7 +569,7 @@ def calibrate(t_ref: float = DEFAULT_T_REF, lam: float = RIDGE) -> dict[str, Any
     ctx = Ctx(table=R.load_table(include_cal=False))      # 先验 = 默认 + 用户改过的，不叠上一次的校准
     used = sorted({ctx.role.get(k, "additive") for r in rows for k in r["design"].whole()} - {"lldpe"})
     ref = base_design(t_ref)
-    out: dict[str, Any] = {"n": len(rows), "date": db.now(), "roles": {}}
+    out: dict[str, Any] = {"n": len(rows), "date": db.now(), "roles": {}, "sig": measured_sig(rows)}
     x_ref = _features(ctx, ref, used)
     for key, col in (("md", "md_n"), ("td", "td_n")):
         data = [(r["design"], r[col], r.get("t_measured") or r["design"].thickness) for r in rows if r.get(col)]
@@ -577,6 +608,87 @@ def calibrate(t_ref: float = DEFAULT_T_REF, lam: float = RIDGE) -> dict[str, Any
     return {"ok": True, **out}
 
 
+def measured_sig(rows: list[dict[str, Any]] | None = None) -> str:
+    """已回填数据的指纹：回填或改了数，指纹就变，出下一轮前会重新校准。"""
+    import hashlib
+
+    rows = measured() if rows is None else rows
+    s = "|".join(f"{r['code']}:{r.get('md_n')}:{r.get('td_n')}:{r.get('grade')}:{r.get('t_measured')}"
+                 for r in sorted(rows, key=lambda r: r["code"]))
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
+
+
+def ensure_calibrated(t_ref: float = DEFAULT_T_REF) -> dict[str, Any]:
+    """回填过新数据就先校准（每次出方案前、回填完都调）；数据没变就沿用上次的校准。fresh=这次刚校准。"""
+    rows = measured()
+    if len(rows) < 4:
+        return {"ok": False, "fresh": False, "n": len(rows),
+                "reason": f"已回填 {len(rows)} 组，至少 4 组（含现配方对照）才校准，现在按定性系数出方案。"}
+    cal = R.calibration()
+    if cal and cal.get("sig") == measured_sig(rows):
+        return {**cal, "ok": True, "fresh": False}
+    r = calibrate(t_ref)
+    return {**r, "fresh": bool(r.get("ok"))}
+
+
+def verified_best(md_req: float = 1.0, td_req: float = 1.0) -> dict[int, dict[str, Any]]:
+    """实测验证过的最省：纵/横拉断力实测不低于现配方（× 要求），透光实测达到该档，按今天的价格最便宜的那组。"""
+    cal = R.calibration()
+    md_ref, td_ref = cal.get("md_N_ref"), cal.get("td_N_ref")
+    if not (md_ref and td_ref):
+        ctrl = [r for r in measured() if r["purpose"] == "现配方对照" and abs(r["design"].thickness - DEFAULT_T_REF) < 1e-6]
+        md_ref = float(np.mean([r["md_n"] for r in ctrl if r.get("md_n")])) if any(r.get("md_n") for r in ctrl) else None
+        td_ref = float(np.mean([r["td_n"] for r in ctrl if r.get("td_n")])) if any(r.get("td_n") for r in ctrl) else None
+    if not (md_ref and td_ref):
+        return {}
+    ctx = Ctx()
+    out: dict[int, dict[str, Any]] = {}
+    for r in measured():
+        if not (r.get("md_n") and r.get("td_n")) or r.get("grade") is None:
+            continue
+        if r["md_n"] < md_ref * (md_req or 0) or r["td_n"] < td_ref * (td_req or 0):
+            continue
+        cost = ctx.cost(r["design"])
+        if cost is None:
+            continue
+        for g in range(int(r["grade"]) + 1):
+            if g not in out or cost < out[g]["cost"]:
+                out[g] = {"code": r["code"], "design": r["design"], "cost": round(cost), "md_n": r["md_n"], "td_n": r["td_n"],
+                          "grade": int(r["grade"]), "md_ref": round(md_ref, 1), "td_ref": round(td_ref, 1)}
+    return out
+
+
+def round_prices(round_no: int) -> dict[str, float]:
+    """出这一轮时的价格（元/吨）：新出的轮次记在 meta 里；老的从运行报告的价格表里取。"""
+    meta = round_meta(round_no)
+    if meta.get("prices"):
+        return {c: float(v["price"]) for c, v in meta["prices"].items() if v.get("price")}
+    import json
+
+    p = KB["experiment"] / f"round_{round_no}_report.json"
+    try:
+        rep = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        return {}
+    for b in rep.get("blocks") or []:
+        rows = b.get("rows") or []
+        if b.get("t") == "table" and rows and "代码" in rows[0] and "当前价(元/吨)" in rows[0]:
+            return {r["代码"]: float(r["当前价(元/吨)"]) for r in rows if r.get("当前价(元/吨)")}
+    return {}
+
+
+def discard_round(round_no: int) -> int:
+    """作废一轮还没回填的方案（换成新出的）：删掉这一轮的试验和网页上的报告；有回填数据的轮次不动。返回删了几组。"""
+    if round_no < 1 or round_no != next_round_no() - 1 or any(r["round"] == round_no for r in measured()):
+        return 0
+    n = len(trials(round_no))
+    db.execute("DELETE FROM aba_trials WHERE round=?", (round_no,))
+    for p in (KB["experiment"] / f"round_{round_no}_report.json",):
+        if p.exists():
+            p.unlink()
+    return n
+
+
 def reset_calibration() -> None:
     if R.CAL_PATH.exists():
         R.CAL_PATH.unlink()
@@ -609,6 +721,7 @@ def next_round(query: dict[str, Any] | None = None, n_exploit: int = 6, n_explor
     """用当前（已校准的）模型：每档最低成本的几组（利用）+ 离已做过的配方最远、但预测可行又便宜的几组（探索）。"""
     from . import optimize as O
 
+    ensure_calibrated((query or {}).get("t_ref", DEFAULT_T_REF))
     q = dict(query or {})
     q["top_k"] = max(int(q.get("top_k") or 0), 12)
     out = O.run(q)

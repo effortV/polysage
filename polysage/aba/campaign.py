@@ -105,6 +105,76 @@ def _plain(v: Any) -> Any:
         return str(v)
 
 
+FEEDBACK_CODES = ("LL", "LLC", "LD", "HD", "R1", "FL")
+
+
+def _feedback(round_no: int, ref: dict[str, Any]) -> dict[str, Any]:
+    """第 2 轮起报告里多一节：价格比上一轮变了多少、已回填的实验教会了模型什么、实测验证过的最省配方。"""
+    out: dict[str, Any] = {}
+    blocks = Blocks()
+    ctx = Ctx()
+    if round_no > 1:
+        before = E.round_prices(round_no - 1)
+        rows = []
+        for c in [c for c in FEEDBACK_CODES if c in before and ctx.prices.get(c)]:
+            old, new = before[c], float(ctx.prices[c])
+            rows.append({"代码": c, "名称": ctx.mats.get(c, {}).get("name", ""), f"第 {round_no - 1} 轮(元/吨)": round(old),
+                         "现在(元/吨)": round(new), "变化": f"{(new - old) / old * 100:+.1f}%" if old else ""})
+        if rows:
+            moved = [r for r in rows if r["变化"] and abs(float(r["变化"].rstrip("%"))) >= 0.05]
+            out["price_line"] = (f"**价格（和第 {round_no - 1} 轮比）**：" + "；".join(f"{r['代码']} {r[f'第 {round_no - 1} 轮(元/吨)']}→{r['现在(元/吨)']}"
+                                                                          f"（{r['变化']}）" for r in moved) + "。"
+                                 if moved else f"**价格（和第 {round_no - 1} 轮比）**：主要原料价格没变。")
+            blocks.h(f"价格和第 {round_no - 1} 轮比", level=2)
+            blocks.table(rows, widths_cm=[1.3, 5.0, 2.6, 2.2, 1.6], font_size=8.5)
+    meas = E.measured()
+    cal = R.calibration()
+    if meas:
+        by_round: dict[int, int] = {}
+        for r in meas:
+            by_round[r["round"]] = by_round.get(r["round"], 0) + 1
+        best = E.verified_best()
+        head = f"已回填 {len(meas)} 组（" + "，".join(f"第 {k} 轮 {v} 组" for k, v in sorted(by_round.items())) + "）"
+        if best:
+            parts = [f"透光≥{R.GRADE_LABEL[g]} {b['code']} {b['cost']} 元/吨（{_pct(ref.get('cost'), b['cost'])}）"
+                     for g, b in sorted(best.items(), reverse=True)]
+            out["measured_line"] = f"**实验反馈**：{head}；实测验证过、拉断力不低于现配方的最省：" + "；".join(parts) + "。"
+        else:
+            out["measured_line"] = f"**实验反馈**：{head}；还没有实测拉断力不低于现配方、又有透光档的组。"
+        blocks.h("已回填的实验：模型学到了什么", level=2)
+        if cal.get("n"):
+            out["cal"] = cal
+            blocks.p(f"用 {cal['n']} 组实测校准（{str(cal.get('date', ''))[:16].replace('T', ' ')}）：现配方 {DEFAULT_T_REF:g} 丝 "
+                     f"纵向约 {cal.get('md_N_ref')} N、横向约 {cal.get('td_N_ref')} N；拉断力拟合误差 纵 {cal.get('md_rmse_pct')}% / "
+                     f"横 {cal.get('td_rmse_pct')}%；透光档命中 {cal.get('grade_hit')}%。这一轮的最省方案都按校准后的系数挑。")
+            prior = R.load_table(include_cal=False)
+            coef = [{"料": prior.get(role, {}).get("label", role), "用到的组数": v.get("n"),
+                     "纵向 先验→校准": f"{prior.get(role, {}).get('md', 0):+.3f} → {v.get('md', prior.get(role, {}).get('md', 0)):+.3f}",
+                     "横向 先验→校准": f"{prior.get(role, {}).get('td', 0):+.3f} → {v.get('td', prior.get(role, {}).get('td', 0)):+.3f}",
+                     "透光 先验→校准": f"{prior.get(role, {}).get('trans', 0):+.2f} → {v.get('trans', prior.get(role, {}).get('trans', 0)):+.2f}"}
+                    for role, v in (cal.get("roles") or {}).items()]
+            if coef:
+                blocks.table(coef, widths_cm=[3.4, 1.8, 3.2, 3.2, 3.2], font_size=8.5)
+                blocks.note("系数是每 10 个百分点（占整膜）对强度（对数）和透光分的影响；数据少时往先验收缩，数据多了才明显改。")
+        else:
+            blocks.p("回填还不到 4 组（要含现配方对照），还没校准；这一轮仍按定性系数。")
+        if best:
+            blocks.p("**实测验证过的最省配方**（纵/横拉断力实测不低于现配方，透光实测达到该档，按今天的价格）：")
+            blocks.table([{"透光要求": f"≥{R.GRADE_LABEL[g]}", "编号": b["code"], "配方": b["design"].text(), "元/吨": b["cost"],
+                           "较现配方": _pct(ref.get("cost"), b["cost"]), "实测纵/横 N": f"{b['md_n']:g} / {b['td_n']:g}",
+                           "现配方纵/横 N": f"{b['md_ref']:g} / {b['td_ref']:g}"} for g, b in sorted(best.items(), reverse=True)],
+                         widths_cm=[1.5, 1.4, 7.0, 1.4, 1.5, 2.0, 2.0], font_size=8)
+        cmp_ = E.compare()
+        if not cmp_.empty:
+            rows = [{k: (None if isinstance(v, float) and v != v else v) for k, v in r.items()} for r in cmp_.to_dict("records")]
+            blocks.p(f"**预测 vs 实测**（用现在的系数重新预测，共 {len(rows)} 组" + ("，列前 30 组" if len(rows) > 30 else "") + "）：")
+            blocks.table(rows[:30], widths_cm=[1.4, 6.0, 1.4, 1.4, 1.4, 1.4, 1.3, 1.3], font_size=7.5)
+    if blocks:
+        out["title"] = "上一轮反馈：价格变化与实测" if round_no > 1 else "实测反馈"
+        out["blocks"] = list(blocks)
+    return out
+
+
 def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discover: dict[str, Any] | None = None,
                   cleaned: list[str] | None = None, t_ref: float = DEFAULT_T_REF) -> dict[str, Any]:
     """按当前价和期货价重算各档最省方案，排成报告内容块（Word 和网页共用）。"""
@@ -130,9 +200,15 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
             return f"，每平方米 {ev['cost_m2']:.3f} 元（{_pct(ref['cost_m2'], ev['cost_m2'])}）"
         return ""
     B = Blocks()
+    nums = iter("一二三四五六七八九十")
+
+    def H(title: str) -> None:                      # 节号自动排：有回填反馈时多一节
+        B.h(f"{next(nums)}、{title}", level=1)
+
+    fb = _feedback(round_no, ref)
 
     # 一、结论
-    B.h("一、结论（先看这里）", level=1)
+    H("结论（先看这里）")
     ll = cur["scenario"].get("ref") or {}
     concl = []
     if ll.get("LL"):
@@ -143,6 +219,10 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
                 by_ratio.setdefault(round(s["ratio"], 3), []).append(s["label"])
         concl.append(f"**价格**：LLDPE 价格卡 {ll['LL']:.0f} 元/吨（{ll.get('LL_date')}，{src[:90]}）。"
                      + "".join(f" {' / '.join(labels)}：LLDPE ≈ {ll['LL'] * r:.0f}（×{r:.3f}）。" for r, labels in by_ratio.items()))
+    if fb.get("price_line"):
+        concl.append(fb["price_line"])
+    if fb.get("measured_line"):
+        concl.append(fb["measured_line"])
     concl.append(f"**现配方**：{ref['text']}，当前价 **{ref['cost']:.0f} 元/吨**，透光{ref['grade_label']}。" if ref.get("cost")
                  else f"**现配方**：{ref['text']}（缺价）。")
     best_line = []
@@ -186,12 +266,21 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
             counts[kind] = counts.get(kind, 0) + 1
     concl.append(f"**本轮试验 {len(trials)} 组**：" + "，".join(f"{k} {v} 组" for k, v in counts.items())
                  + f"。配方表、投料单和数据记录表见《ABA第{round_no}轮试验方案》Word。")
-    concl.append("**现在的预测是定性的**（按材料类别的经验系数），把握标在每个方案后面；做完这一轮、回填实测，"
-                 "系统会用数据校准系数（机器学习），再给出更准的下一轮。")
+    if fb.get("cal"):
+        c = fb["cal"]
+        concl.append(f"**预测已用 {c.get('n')} 组实测校准**（拉断力拟合误差 纵 {c.get('md_rmse_pct')}% / 横 {c.get('td_rmse_pct')}%，"
+                     f"透光档命中 {c.get('grade_hit')}%）；回填越多越准，把握标在每个方案后面。")
+    else:
+        concl.append("**现在的预测是定性的**（按材料类别的经验系数），把握标在每个方案后面；做完这一轮、回填实测，"
+                     "系统会用数据校准系数（机器学习），再给出更准的下一轮。")
     B.ul(concl)
 
+    if fb.get("blocks"):
+        H(fb["title"])
+        B.extend(fb["blocks"])
+
     # 二、价格
-    B.h("二、价格", level=1)
+    H("价格")
     if market:
         label = {"forecast": "价格预判（现价 → 1 个月）", "web": "网查同类报价", "price_card": "写进价格卡",
                  "materials": "回料/填充报价", "web_error": "网查出错", "forecast_error": "预判出错", "materials_error": "回料网查出错"}
@@ -218,12 +307,12 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
         B.note("清掉的明显抽错的网查价：" + "；".join(cleaned))
 
     # 三、现配方在不同价格下
-    B.h("三、现配方在不同价格下", level=1)
+    H("现配方在不同价格下")
     B.table([{"价格场景": s["label"], "元/吨": runs[s["name"]]["ref"].get("cost"), "克重 g/m²": runs[s["name"]]["ref"].get("gsm"),
               "元/m²(参考)": _m2s(runs[s["name"]]["ref"].get("cost_m2"))} for s in scens], font_size=9)
 
     # 四、分档最低成本（当前价）
-    B.h("四、分档最低成本（当前价，纵横拉断力不低于现配方）", level=1)
+    H("分档最低成本（当前价，纵横拉断力不低于现配方）")
     for gname in ("现有料", "厚度不变", "加新料"):
         per = (fixed if gname == "厚度不变" else cur)["groups"].get("现有料" if gname == "厚度不变" else gname) or {}
         lines, shown = [], set()
@@ -256,7 +345,7 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
             B.ul(ev["drivers"][:4])
 
     # 五、价格变化下
-    B.h("五、价格变化下的最省方案", level=1)
+    H("价格变化下的最省方案")
     lines = []
     for s in scens:
         o = runs[s["name"]]
@@ -269,7 +358,7 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
     B.note("LLDPE 涨价时，填充母料（不跟涨）相对更划算，最省方案会往多填充、稍厚的方向走；跌价时反过来。")
 
     # 六、新材料
-    B.h("六、新材料（智能体网上找到、买得到的）", level=1)
+    H("新材料（智能体网上找到、买得到的）")
     if discover:
         for k in ("added", "better", "notes"):
             if discover.get(k):
@@ -305,7 +394,7 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
         B.p("库里还没有智能体找到的新料。")
 
     # 七、本轮试验
-    B.h(f"七、第 {round_no} 轮试验怎么安排", level=1)
+    H(f"第 {round_no} 轮试验怎么安排")
     B.table([{"类别": k, "组数": v} for k, v in counts.items()], widths_cm=[4, 2], font_size=9)
     pool = sorted((t for t in trials if t["purpose"].startswith(("降本", "利用"))), key=lambda t: t["predicted"].get("cost") or 1e9)
     cheapest = [t for t in pool if "厚度不变" in t["purpose"]]
@@ -321,13 +410,14 @@ def report_blocks(round_no: int, *, market: dict[str, Any] | None = None, discov
               for t in cheapest])
 
     # 八、下一步
-    B.h("八、做完以后", level=1)
+    H("做完以后")
     B.ul([
         f"按《ABA第{round_no}轮试验方案》的投料单打样，按测试约定测纵向 / 横向拉断力（N）、实测厚度，透光按标样判 0/1/2 档。",
-        "把方案 Word 最后的数据记录表填好，在网页「实验与校准 › 回填实测」直接上传这个 Word（不用改格式；没做的组空着就行）。",
-        "点「校准与对比」：系统用岭回归（拉断力）和有序回归（透光档）把系数往实测拉，现配方对照组给出拉断力的绝对值（N）。",
-        "点「下一轮」：按校准后的模型给出每档最省的几组（利用）+ 离已做过的配方远的几组（探索）+ 现配方对照，同样出 Word。",
-        "价格变了随时可以问配方助手“按今天的价格/期货价重新算”，或在这里再跑一轮。",
+        "把方案 Word 最后的数据记录表填好，在网页「实验与校准 › 回填实测」直接上传这个 Word（不用改格式；没做的组空着就行）。"
+        "上传后系统自动校准：岭回归（拉断力）和有序回归（透光档）把系数往实测拉，现配方对照组给出拉断力的绝对值（N）。",
+        f"到「实验与校准 › 跑一轮」填这一轮要几组（最多 {E.MAX_ROUND} 组）出下一轮：用校准后的模型和当天的价格挑最省的，"
+        "加上透光拿不准的几组和补没测过区域的建模组；报告里会写上一轮学到了什么、价格变了多少。",
+        "价格变了随时可以问配方助手“按今天的价格/期货价重新算”，或在「各轮结果」点“按今天的价格重算报告”。",
     ], numbered=True)
     B.h("说明与局限", level=2)
     B.ul([n for n in dict.fromkeys(cur["notes"]) if n not in common][:6] + [
@@ -391,7 +481,7 @@ def round_files(round_no: int) -> dict[str, str]:
 
 
 def run(n_total: int = 50, *, refresh_market: bool = True, find_new: bool = True, scenario: str = "current",
-        t_ref: float = DEFAULT_T_REF) -> dict[str, Any]:
+        t_ref: float = DEFAULT_T_REF, replace: bool = False) -> dict[str, Any]:
     """一键跑一整轮（后台任务用）。每一步失败都不影响后面，原因写进报告。"""
     from ..agents import tools_ops as OPS
 
@@ -411,7 +501,12 @@ def run(n_total: int = 50, *, refresh_market: bool = True, find_new: bool = True
             steps["新料"] = f"新入库 {len(discover.get('added') or [])} 种"
         except Exception as e:  # noqa: BLE001
             steps["新料"] = f"失败：{e}"
-    plan = E.plan_round(n_total, t_ref=t_ref, scenario=scenario)
+    plan = E.plan_round(n_total, t_ref=t_ref, scenario=scenario, replace=replace)
+    cal = plan["meta"].get("calibration") or {}
+    steps["校准"] = (f"用 {cal.get('n')} 组实测" + ("重新校准" if cal.get("fresh") else "（沿用上次的校准）") if cal.get("ok")
+                   else "还没有足够的回填数据，按定性系数")
+    if plan["meta"].get("replaced"):
+        steps["替换"] = f"作废了第 {plan['round']} 轮原来的 {plan['meta']['replaced']} 组（还没回填）"
     from .. import kb
 
     meta_path = KB["experiment"] / f"round_{plan['round']}_meta.yaml"

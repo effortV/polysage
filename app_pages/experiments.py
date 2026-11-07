@@ -203,29 +203,67 @@ def _round_job_panel() -> None:
                        + " 运行报告和每一组都在「各轮结果」。")
 
 
+def _feedback_status() -> None:
+    """出下一轮前先说清楚：这一轮会用到哪些回填数据、按什么价格。"""
+    n = len(_measured)
+    if n >= 4:
+        again = "数据有更新，出方案前会先重新校准" if _cal.get("sig") != E.measured_sig(_measured) else "用上次的校准"
+        line = (f"已回填 **{n}** 组（{again}）：最省方案按校准后的模型挑，再加透光拿不准的几组；"
+                "建模组避开已经做过的配方，补没测过的区域。")
+    elif n:
+        line = f"已回填 {n} 组，还不够校准（至少 4 组，要含现配方对照），这一轮仍按定性系数。"
+    else:
+        line = "还没有回填数据，这一轮按定性系数出。做完回填后再出下一轮，系统会先用实测校准，再按当天的价格挑方案。"
+    ll = P.price_row("LL") or {}
+    if ll.get("price"):
+        line += f"　价格按今天的价格卡（LLDPE {ll['price']:.0f} 元/吨，{ll.get('price_date') or ''}）。"
+    st.info(line, icon=":material/model_training:")
+
+
+def _round_mode(key: str) -> bool:
+    """最近一轮还没回填时，可以选替换它，还是另开新一轮。返回 True = 替换。"""
+    last = max((t["round"] for t in _trials), default=0)
+    if not last:
+        return False
+    done = sum(1 for t in _measured if t["round"] == last)
+    if done:
+        st.caption(f"第 {last} 轮已回填 {done} 组，这次出第 {last + 1} 轮。")
+        return False
+    n_last = sum(1 for t in _trials if t["round"] == last)
+    pick = st.radio("这次出的方案", [f"另开第 {last + 1} 轮（第 {last} 轮照做，新方案避开它已有的配方）",
+                                   f"替换第 {last} 轮（它还没回填：原来的 {n_last} 组作废，重新出）"],
+                    key=key, help="第 N 轮还没开始做、想换组数或换价格重出时选“替换”。已经回填过的轮次不能替换。")
+    return pick.startswith("替换")
+
+
 def _render_tab_run() -> None:
-    st.markdown("**一键跑一整轮**：更新行情（期货 + 网查报价）→ 清掉抽错的价格 → 找新料 → 分档寻优（当前价 + 期货价）"
-                "→ 出试验方案 → 生成《试验方案》《运行报告》两份 Word。跑完的结果在「各轮结果」。")
+    st.markdown("**一键跑一整轮**：更新行情（期货 + 网查报价）→ 清掉抽错的价格 → 找新料 → 用回填数据校准 → 分档寻优"
+                "（当前价 + 期货价）→ 出试验方案 → 生成《试验方案》《运行报告》两份 Word。跑完的结果在「各轮结果」。")
+    _feedback_status()
+    replace = _round_mode("round_mode")
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1.4], vertical_alignment="bottom")
-    n_all = c1.number_input("这一轮做几组", 12, 80, 50, step=2, key="round_n")
+    n_all = c1.number_input("这一轮做几组", 12, E.MAX_ROUND, 50, step=2, key="round_n",
+                            help=f"12~{E.MAX_ROUND} 组。组数多出来的名额主要给建模组（让机器学习学得更快），"
+                                 "降本 / 提透光候选约占两成。")
     refresh = c2.checkbox("先更新行情", value=True, key="round_refresh")
     find_new = c3.checkbox("先找新料", value=True, key="round_new")
     if c4.button("开始跑一整轮", type="primary", icon=":material/play_arrow:", disabled=jobs.is_running()):
         n = int(n_all)
-        ok = jobs.start("aba_round", lambda: C.run(n, refresh_market=refresh, find_new=find_new))
+        ok = jobs.start("aba_round", lambda: C.run(n, refresh_market=refresh, find_new=find_new, replace=replace))
         st.toast("已在后台开始" if ok else "后台有别的任务在跑，等它跑完再开始", icon=":material/autorenew:")
         st.rerun()
     _round_job_panel()
-    with ui.expander("只出试验方案（不更新行情、不找新料，几秒钟）"):
+    with ui.expander("只出试验方案（不更新行情、不找新料，一分钟内）"):
         st.caption("组成：现配方 3.5 / 4.5 / 5.5 丝对照 3 组 + 各透光档预测最省（降本 / 提透光）+ 库里更省的新料 + "
                    "其余用 D-最优在 A/B 层再生、B 层填充、B 层 HDPE、A 层占比、厚度六个因素上铺开（给机器学习用）。")
         a1, a2, a3 = st.columns(3)
         t_ref = a1.number_input("现配方对照厚度（丝）", 2.0, 8.0, 4.5, step=0.5, key="plan_tref")
-        n_pts = a2.number_input("组数", 12, 80, 50, step=2, key="plan_n")
+        n_pts = a2.number_input("组数", 12, E.MAX_ROUND, 50, step=2, key="plan_n")
         scen = a3.selectbox("按哪个价格挑最省", list(P.SCENARIOS)[:4], format_func=P.SCENARIOS.get, key="plan_scen")
         if st.button("生成试验方案", key="plan_go"):
             with st.spinner("挑选中…"):
-                r = E.plan_round(int(n_pts), t_ref=t_ref, scenario=scen)
+                r = E.plan_round(int(n_pts), t_ref=t_ref, scenario=scen, replace=replace)
+                C.report_docx(r["round"], t_ref=t_ref)            # 网页「各轮结果」也有这一轮的报告
             st.session_state["plan_msg"] = (f"第 {r['round']} 轮 {len(r['trials'])} 组已生成："
                                             + "，".join(f"{k} {v}" for k, v in r["meta"]["counts"].items())
                                             + "。到「各轮结果」看和下载。")
@@ -247,6 +285,13 @@ def _render_tab_fill() -> None:
             st.success(f"写入 {res['updated']} 组；跳过（没填）{len(res['skipped'])} 组。")
             for p in res["problems"]:
                 st.warning(p)
+            cal = E.ensure_calibrated()                       # 回填完马上校准，下一轮直接用
+            if cal.get("ok"):
+                st.success(f"已自动用 {cal['n']} 组实测校准：现配方 4.5 丝 纵 {cal.get('md_N_ref')} N / 横 {cal.get('td_N_ref')} N；"
+                           f"拟合误差 纵 {cal.get('md_rmse_pct')}% 横 {cal.get('td_rmse_pct')}%；透光档命中 {cal.get('grade_hit')}%。"
+                           "到「跑一轮」填组数出下一轮，会按校准后的模型和今天的价格挑方案。")
+            else:
+                st.info(cal.get("reason") or "还不能校准。")
         except Exception as e:  # noqa: BLE001
             st.error(f"导入失败：{e}")
     st.markdown("##### 已回填")
@@ -289,8 +334,8 @@ def _render_tab_cal() -> None:
 
 
 def _render_tab_next() -> None:
-    st.caption("下一轮 = 每档预测最省的几组（利用）+ 离已做过的配方最远、但预测可行的几组（探索）+ 现配方对照。"
-               "没校准时也能出，但建议先把首轮做完、回填、校准。")
+    st.caption("这里是小步快跑（10 组左右）：每档预测最省的几组（利用）+ 离已做过的配方最远、但预测可行的几组（探索）+ 现配方对照。"
+               f"要出一整轮（比如 80 组）到「跑一轮」——两边都会先用回填数据校准，再按今天的价格挑。")
     opts = {"不降": 1.0, "提升 5%": 1.05, "允许降 5%": 0.95, "不管": None}
     c1, c2, c3, c4 = st.columns(4)
     md = c1.selectbox("纵向拉断力", list(opts), key="next_md")

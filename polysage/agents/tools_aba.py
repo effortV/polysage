@@ -110,17 +110,21 @@ def aba_prices():
 
 
 @tool("aba_experiment", "实验闭环：round 在后台跑一整轮（更新行情→找新料→分档寻优→出 n 组试验方案，另出《试验方案》《运行报告》两份 Word，"
-      "约 5~15 分钟，进度用 background_status 查）；first 立刻出 n 组试验方案（默认 50：现配方对照 + 各档预测最省 + 新料 + "
-      "D-最优建模组，含 Word）；next 用（已校准的）模型推荐下一轮；calibrate 用已回填的实测校准系数；status 看试验和校准状态。"
+      "约 5~15 分钟，进度用 background_status 查）；first 立刻出 n 组试验方案（默认 50，最多 150：现配方对照 + 各档预测最省 + 新料 + "
+      "透光拿不准的 + D-最优建模组，含 Word）；有回填数据时 round/first 都会先自动校准，再按当天的价格挑，建模组避开做过的配方；"
+      "replace=true 时作废还没回填的最近一轮、用新方案替换（用户说“把第 1 轮换成 80 组”就这样用）；"
+      "next 小步推荐 10 组左右；calibrate 用已回填的实测校准系数；status 看试验和校准状态。"
       "回填实测：把方案 Word 里的数据记录表填好，在「实验与校准」页上传。回答里写上生成的文件名，用户就能直接下载。",
       {"action": {"type": "string", "enum": ["round", "first", "next", "calibrate", "status"]},
-       "n": {"type": "integer", "description": "这一轮几组（12~80，默认 50）"},
+       "n": {"type": "integer", "description": "这一轮几组（12~150，默认 50）"},
+       "replace": {"type": "boolean", "description": "最近一轮还没回填时作废它、用这次的方案替换（不另开一轮）"},
        "md_req": {"type": "number"}, "td_req": {"type": "number"}, "t_ref": {"type": "number"}}, ["action"])
-def aba_experiment(action: str, n: int = 50, md_req: float = 1.0, td_req: float = 1.0, t_ref: float = 4.5):
+def aba_experiment(action: str, n: int = 50, md_req: float = 1.0, td_req: float = 1.0, t_ref: float = 4.5,
+                   replace: bool = False):
     from ..aba import experiments as E
     from ..aba import rules as R
 
-    n = max(12, min(int(n or 50), 80))
+    n = max(12, min(int(n or 50), E.MAX_ROUND))
     if action == "round":
         from .. import jobs
         from ..aba import campaign
@@ -129,11 +133,14 @@ def aba_experiment(action: str, n: int = 50, md_req: float = 1.0, td_req: float 
         running = jobs.info()
         if running:
             return f"后台正在跑「{JOB_LABELS.get(running['name'], running['name'])}」，等它跑完再开始。", []
-        ok = jobs.start("aba_round", lambda: campaign.run(n, t_ref=float(t_ref)))
+        ok = jobs.start("aba_round", lambda: campaign.run(n, t_ref=float(t_ref), replace=bool(replace)))
         return ("已在后台开始跑一整轮：更新行情 → 找新料 → 分档寻优 → 出 %d 组试验方案和两份 Word，约 5~15 分钟；"
                 "跑完在网页「实验与校准 › 各轮结果」看运行报告、每一组和下载 Word，或再问我进度。" % n if ok else "没能启动后台任务，请稍后再试。"), []
     if action == "first":
-        r = E.plan_round(n, t_ref=float(t_ref))
+        from ..aba import campaign
+
+        r = E.plan_round(n, t_ref=float(t_ref), replace=bool(replace))
+        campaign.report_docx(r["round"], t_ref=float(t_ref))
         lines = [f"第 {r['round']} 轮试验方案 {len(r['trials'])} 组（" + "，".join(f"{k} {v}" for k, v in r["meta"]["counts"].items())
                  + f"）。Word：06_实验数据/{Path(r['docx']).name}；表格：06_实验数据/{Path(r['xlsx']).name}；"
                  "网页「实验与校准 › 各轮结果」也能看和下载"]
