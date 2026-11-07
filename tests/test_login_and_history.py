@@ -34,9 +34,7 @@ def test_remember_login_token(monkeypatch):
 
 
 def test_chat_history_list_open_delete():
-    for s in runner.list_sessions(include_archived=True):
-        if s["role_key"] == "advisor":
-            runner.delete_session(s["id"])
+    before = {s["id"] for s in runner.list_sessions(include_archived=True)}
     a = runner.create_session("advisor")
     runner._add(a, "user", "性能不变或者提升，最低成本是多少？这句话很长很长很长很长很长很长很长很长很长很长，再加一点")
     runner._add(a, "assistant", "答：8515 元/吨")
@@ -44,16 +42,20 @@ def test_chat_history_list_open_delete():
     runner._add(b, "user", "现在的价格是多少？")
     runner._add(b, "user", "按期货算呢？")
     empty = runner.create_session("advisor")
-    chats = runner.list_chats("advisor")
+    chats = [c for c in runner.list_chats("advisor") if c["id"] not in before]   # 只看本测试建的
     assert [c["id"] for c in chats] == [b, a]                                   # 新的在前，空对话不列
     assert chats[0]["label"] == "现在的价格是多少？" and chats[0]["n_q"] == 2
     assert chats[1]["label"].endswith("…") and len(chats[1]["label"]) == 41     # 第一个问题当标题，太长截断
     # 新对话：已经有一个空的就接着用，不再多建
+    for s in runner.list_sessions(include_archived=True):
+        assert s["id"] in before or s["id"] in (a, b, empty)
     assert runner.new_chat("advisor", current=b) == empty
     assert runner.new_chat("advisor", current=empty) == empty
     # 删除：会话和问答记录一起删
     runner.delete_session(a)
     assert runner.get_session(a) is None and runner.messages(a) == []
-    assert [c["id"] for c in runner.list_chats("advisor")] == [b]
+    assert [c["id"] for c in runner.list_chats("advisor") if c["id"] not in before] == [b]
     runner._add(empty, "user", "新问题")
     assert runner.new_chat("advisor", current=empty) not in (a, b, empty)       # 当前这个问过了才新建
+    for sid in (b, empty):
+        runner.delete_session(sid)
